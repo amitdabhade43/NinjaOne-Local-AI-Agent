@@ -1,8 +1,17 @@
 from typing import Any
 
 
-def classify_tool(tool: dict[str, Any]) -> str:
-    """Return read, write, or destructive. Unknown tools are treated as writes."""
+def classify_tool(tool: dict[str, Any], arguments: dict[str, Any] | None = None) -> str:
+    """Return read, write, or destructive. Unknown operations are never assumed safe."""
+    args = arguments or {}
+    method = str(args.get("method") or args.get("http_method") or args.get("httpMethod") or "").upper()
+    if method in ("GET", "HEAD", "OPTIONS"):
+        return "read"
+    if method == "DELETE":
+        return "destructive"
+    if method in ("POST", "PUT", "PATCH"):
+        return "write"
+
     if tool.get("destructive_hint") is True:
         return "destructive"
     if tool.get("read_only_hint") is True:
@@ -15,12 +24,12 @@ def classify_tool(tool: dict[str, Any]) -> str:
     if any(word in text for word in ("create", "update", "modify", "patch", "put", "post", "set_", "run_script",
                                      "execute", "reboot", "restart", "shutdown", "install", "action")):
         return "write"
-    # Tool names without trustworthy read-only metadata are not assumed safe.
     return "read" if name.startswith(("list_", "get_", "find_", "search_", "describe_", "discover_")) else "write"
 
 
-def approval_decision(tool: dict[str, Any], allow_delete: bool) -> tuple[bool, str]:
-    kind = classify_tool(tool)
+def approval_decision(tool: dict[str, Any], allow_delete: bool,
+                      arguments: dict[str, Any] | None = None) -> tuple[bool, str]:
+    kind = classify_tool(tool, arguments)
     if kind == "destructive" and not allow_delete:
         return False, "blocked"
     if kind in ("write", "destructive"):
