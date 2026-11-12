@@ -290,8 +290,16 @@ def _endpoint_candidate(
                 score += 10
             if resource and resource.casefold() in searchable:
                 score += 5
-            if resource_term and resource_term in str(candidate.get("path") or "").casefold():
+            path_text = str(candidate.get("path") or "").casefold()
+            if resource_term and resource_term in path_text:
                 score += 5
+            path_segments = [segment for segment in path_text.strip("/").split("/") if segment]
+            if resource_term and path_segments and path_segments[-1] in {
+                resource_term, resource_term + "s"
+            }:
+                score += 20
+            # Prefer collection endpoints over organization/device-scoped endpoints.
+            score -= path_text.count("{") * 20
             candidates.append((score, candidate))
     if not candidates:
         return None
@@ -468,6 +476,10 @@ class NinjaOneAgent:
             return None
 
         endpoint_key = detail.get("endpoint") or candidate.get("endpoint") or f"GET {path}"
+        # Simple inventory requests cannot safely call endpoints requiring an unknown
+        # organization/device/location ID. Let the full agent resolve scoped resources.
+        if re.search(r"\{[^}]+\}", path):
+            return None
         # Cache only after both discovery and description established a documented GET.
         if not cached_route:
             self._endpoint_cache.set(resource, {
