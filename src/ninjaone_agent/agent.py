@@ -67,20 +67,26 @@ class NinjaOneAgent:
     async def run(self, message: str, model: str | None = None,
                   history: list[dict[str, str]] | None = None) -> dict[str, Any]:
         selected = self.foundry.resolve_model(model)
-        available = await self.gateway.list_tools()
+        try:
+            available = await self.gateway.list_tools()
+        except Exception as exc:
+            # General conversation remains available when the NinjaOne gateway is offline.
+            logger.warning("NinjaOne MCP tools unavailable for this request: %s", exc)
+            available = []
         by_name = {item["name"]: item for item in available}
-        if not available:
-            raise RuntimeError("The NinjaOne MCP gateway returned no tools.")
 
-        messages: list[dict[str, Any]] = [{
-            "role": "system",
-            "content": (
-                "You are a careful NinjaOne operations assistant. Use MCP tools for live NinjaOne facts. "
-                "Never invent organizations, users, devices, IDs, or tool results. Inspect tool descriptions and "
-                "schemas. Prefer read-only tools. Do not claim an operation succeeded unless its tool result confirms it. "
-                "If no tool is needed, answer normally. Keep answers concise and identify missing data honestly."
-            ),
-        }]
+        system_text = (
+            "You are a careful NinjaOne operations assistant. Use MCP tools for live NinjaOne facts when available. "
+            "Never invent organizations, users, devices, IDs, or tool results. Inspect tool descriptions and schemas. "
+            "Prefer read-only tools. Do not claim an operation succeeded unless its tool result confirms it. "
+            "If no tool is needed, answer normally. Keep answers concise and identify missing data honestly."
+        )
+        if not available:
+            system_text += (
+                " The NinjaOne MCP gateway is currently unavailable or returned no tools. "
+                "You may answer general questions, but do not claim to have retrieved live tenant data."
+            )
+        messages: list[dict[str, Any]] = [{"role": "system", "content": system_text}]
         for item in (history or [])[-8:]:
             if item.get("role") in ("user", "assistant") and item.get("content"):
                 messages.append({"role": item["role"], "content": item["content"]})
@@ -91,7 +97,9 @@ class NinjaOneAgent:
         for _step in range(self.settings.max_agent_steps):
             used_fallback = False
             try:
-                response = self.foundry.complete(model=selected, messages=messages, tools=tool_specs)
+                response = self.foundry.complete(
+                    model=selected, messages=messages, tools=tool_specs if tool_specs else None
+                )
             except FoundryUnavailable:
                 used_fallback = True
                 tool_reference = json.dumps(
@@ -125,12 +133,12 @@ class NinjaOneAgent:
                     calls.append((call.function.name, args if isinstance(args, dict) else {}, call.id))
             else:
                 content = assistant.content or ""
-                parsed = _json_object(content) if used_fallback else None
+                parsed = _json_object(content) if used_fallback and available else None
 
                 # Some models accept the tools parameter but do not emit tool_calls.
                 # Give those models one explicit JSON-planning fallback before trusting
                 # a plain-text answer to a question that may require live tenant data.
-                if not parsed and not used_fallback:
+                if not parsed and not used_fallback and available:
                     tool_reference = json.dumps(
                         [{"name": t["name"], "description": t["description"],
                           "input_schema": t["input_schema"]} for t in available],
