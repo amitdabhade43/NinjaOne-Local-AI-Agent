@@ -256,6 +256,21 @@ def _people_name_search_intent(message: str) -> str | None:
                 return name
     return None
 
+
+def _format_people_directory(records: list[dict[str, Any]], name: str) -> str:
+    """Render a minimal people directory: account name and email only."""
+    lines = [f"### Accounts matching '{name}'", f"**{len(records)} account(s)**", ""]
+    for record in records:
+        account_name = (
+            " ".join(str(record.get(key)) for key in ("firstName", "lastName")
+                     if record.get(key))
+            or record.get("displayName") or record.get("display_name")
+            or record.get("name") or record.get("username") or "Unnamed account"
+        )
+        email = record.get("email") or "Email not available"
+        lines.append(f"- **{account_name}** — {email}")
+    return "\\n".join(lines)
+
 def _record_matches_person_name(record: dict[str, Any], query: str) -> bool:
     """Match a name against common NinjaOne person fields without guessing identity."""
     first = str(record.get("firstName") or record.get("first_name") or "")
@@ -713,19 +728,8 @@ class NinjaOneAgent:
                 "steps": steps, "pending_approvals": [],
             }
         if matches:
-            # Default directory view is intentionally minimal: account name + email only.
-            # Additional fields are retrieved when the user explicitly asks for them.
-            lines = [f"### Accounts matching '{name}'", f"**{len(matches)} account(s)**", ""]
-            for record in matches:
-                account_name = (
-                    " ".join(str(record.get(key)) for key in ("firstName", "lastName")
-                             if record.get(key))
-                    or record.get("displayName") or record.get("display_name")
-                    or record.get("name") or record.get("username") or "Unnamed account"
-                )
-                email = record.get("email") or "Email not available"
-                lines.append(f"- **{account_name}** — {email}")
-            answer = "\n".join(lines)
+            # Do not expose extra account fields unless explicitly requested.
+            answer = _format_people_directory(matches, name)
         else:
             answer = f"No matching people records containing '{name}' were found in the retrieved categories: " + ", ".join(searched) + "."
         if unavailable:
