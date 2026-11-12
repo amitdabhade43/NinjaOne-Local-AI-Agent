@@ -47,10 +47,19 @@ def test_endpoint_candidate_requires_documented_get_path():
     selected = _endpoint_candidate({
         "structured_content": {"results": [
             {"endpoint": "GET /v2/organizations", "summary": "List organizations"},
+            {"endpoint": "GET /v2/organization/{id}/locations", "summary": "Organization locations"},
+            {"endpoint": "GET /v2/locations", "summary": "List locations"},
             {"endpoint": "GET /v2/devices", "summary": "List devices"}
         ]}
     }, "devices")
     assert selected["endpoint"] == "GET /v2/devices"
+    location = _endpoint_candidate({
+        "structured_content": {"results": [
+            {"endpoint": "GET /v2/organization/{id}/locations", "summary": "Organization locations"},
+            {"endpoint": "GET /v2/locations", "summary": "List locations"}
+        ]}
+    }, "locations")
+    assert location["endpoint"] == "GET /v2/locations"
 
 
 def test_inventory_records_extracts_common_collection_envelope():
