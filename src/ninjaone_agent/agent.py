@@ -580,6 +580,19 @@ class NinjaOneAgent:
             if not candidate:
                 unavailable.append(label)
                 continue
+            # Avoid treating a singular/detail endpoint (for example an app-user-contact
+            # lookup) as a complete collection of people.
+            expected_collections = {
+                "console users": {"users"},
+                "end users": {"end-users"},
+                "technicians": {"technicians"},
+                "contacts": {"contacts"},
+            }
+            candidate_path = str(candidate.get("path") or "").rstrip("/")
+            final_segment = candidate_path.split("/")[-1].casefold()
+            if final_segment not in expected_collections[label]:
+                unavailable.append(label)
+                continue
             endpoint = candidate.get("endpoint") or (
                 f"{candidate.get('method')} {candidate.get('path')}"
             )
@@ -620,7 +633,11 @@ class NinjaOneAgent:
                 continue
 
             searched.append(label)
-            for record in _inventory_records(result):
+            records = _inventory_records(result)
+            reported_total = _inventory_total(result)
+            if reported_total is not None and reported_total > len(records):
+                unavailable.append(f"{label} (only {len(records)} of {reported_total} records returned; pagination required)")
+            for record in records:
                 if not _record_matches_person_name(record, name):
                     continue
                 record_copy = dict(record)
