@@ -36,6 +36,8 @@ NinjaOne Public API v2
 - POST/PUT/PATCH operations require explicit approval. When the MCP tool schema exposes the gateway HMAC approval_token, the backend signs the exact method, resolved path, and request-body hash after approval; legacy tools without that parameter remain protected by the agent approval gate and cannot receive an injected unknown argument.
 - DELETE is blocked by the gateway and is not enabled by this agent.
 - The agent supports the current schema-driven gateway tools and includes prompt guidance for the legacy endpoint-discovery tool names.
+- Simple, unfiltered inventory list/count questions use a deterministic read-only fast path when the connected gateway exposes the legacy `find_endpoint`, `describe_endpoint`, and `call` tools. It discovers and inspects the documented endpoint, verifies it is GET, and calls it directly without model planning/finalization. Filtered, investigative, write, and unsupported requests stay on the normal agent workflow.
+- The browser chat shows each completed MCP step, its status, and returned result in a collapsible activity timeline. Activity is displayed when the response completes; it is not token-by-token/live streaming.
 
 ## Skills
 
