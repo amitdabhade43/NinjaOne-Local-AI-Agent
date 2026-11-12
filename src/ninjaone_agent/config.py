@@ -4,9 +4,7 @@ from pathlib import Path
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
-# Expected layout:
-# C:\\project\\NinjaOne-Local-AI-Agent
-# C:\\project\\NinjaRMM-API-Gateway-MCP
+# Expected layout: both repositories are sibling folders under C:\\project.
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 GATEWAY_ROOT = PROJECT_ROOT / "NinjaRMM-API-Gateway-MCP"
 
@@ -18,7 +16,9 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
-    foundry_base_url: str = "http://127.0.0.1:5273/v1"
+    # Foundry Local assigns a dynamic port. The agent discovers it from
+    # the Foundry CLI; this optional URL is retained as a fallback.
+    foundry_base_url: str = ""
     foundry_api_key: str = "not-needed"
     foundry_model: str = ""
 
