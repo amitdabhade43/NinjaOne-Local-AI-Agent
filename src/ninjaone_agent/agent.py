@@ -1,4 +1,5 @@
 import json
+from contextlib import AsyncExitStack
 import logging
 import re
 import uuid
@@ -6,7 +7,7 @@ from typing import Any
 
 from ninjaone_agent.config import Settings
 from ninjaone_agent.foundry import FoundryClient, FoundryUnavailable
-from ninjaone_agent.mcp_gateway import NinjaOneMCPGateway
+from ninjaone_agent.mcp_gateway import MCPGatewayError, NinjaOneMCPGateway
 from ninjaone_agent.safety import approval_decision, classify_tool
 from ninjaone_agent.skills import render_master_instructions, render_skill_context
 from ninjaone_agent.approval import (
@@ -207,12 +208,15 @@ class NinjaOneAgent:
                   history: list[dict[str, str]] | None = None) -> dict[str, Any]:
         # Keep the gateway subprocess alive for discovery, inspection, and execution
         # during this turn instead of spawning a new Python process per tool call.
+        stack = AsyncExitStack()
         try:
-            async with self.gateway.connection():
-                return await self._run_connected(message, model, history)
-        except Exception as exc:
-            # Preserve general local-model chat when the NinjaOne gateway is offline.
+            await stack.enter_async_context(self.gateway.connection())
+        except MCPGatewayError as exc:
+            await stack.aclose()
+            # Preserve general local-model chat when the gateway cannot start.
             logger.warning("NinjaOne MCP gateway unavailable for this turn: %s", exc)
+            return await self._run_connected(message, model, history)
+        async with stack:
             return await self._run_connected(message, model, history)
 
     async def _run_connected(self, message: str, model: str | None = None,
