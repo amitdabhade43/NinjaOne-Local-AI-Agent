@@ -196,6 +196,23 @@ Keep HOST=127.0.0.1. Do not expose the service to the LAN or bind to 0.0.0.0 unt
 
 The per-turn MCP session reuse removes repeated gateway Python process startup between tool calls. Progressive skill loading limits domain instructions to the most relevant skills. Neither change guarantees a particular model latency: Foundry model generation, thinking-token count, context length, number of tool rounds, and NinjaOne API latency still affect total response time.
 
+## Local latency benchmark
+
+After starting the agent and connecting the gateway, run the read-only management benchmark:
+
+~~~powershell
+$env:PYTHONPATH = "src"
+.\.venv\Scripts\python.exe .\scripts\benchmark_agent.py
+~~~
+
+To compare loaded Foundry models, run the same questions once per model:
+
+~~~powershell
+.\.venv\Scripts\python.exe .\scripts\benchmark_agent.py --model "qwen3-14b-generic-gpu" --output reports\qwen3-14b.json
+~~~
+
+The report records latency, tool count, tool names, statuses, and answer length. It deliberately does not save answer bodies or NinjaOne records. Run only against a tenant where these read-only queries are permitted.
+
 ## Reference
 
 The Markdown skill layout and progressive-disclosure pattern are adapted from https://github.com/wshobson/agents. Its Claude/Codex/Cursor/OpenCode adapters and optional external LLM evaluation are not dependencies of this project.
