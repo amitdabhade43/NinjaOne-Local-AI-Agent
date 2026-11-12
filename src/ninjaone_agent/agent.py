@@ -279,7 +279,10 @@ def _tool_arguments(tool: dict[str, Any], preferred: dict[str, Any]) -> dict[str
     schema = tool.get("input_schema") or {}
     properties = schema.get("properties") or {}
     required = schema.get("required") or []
-    arguments = {key: value for key, value in preferred.items() if key in properties}
+    arguments = {
+        key: value for key, value in preferred.items()
+        if key in properties and value is not None
+    }
     if any(key not in arguments for key in required):
         return None
     if _validate_tool_arguments(schema, arguments):
