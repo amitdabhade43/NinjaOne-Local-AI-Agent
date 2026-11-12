@@ -1,5 +1,6 @@
 import os
 from contextlib import asynccontextmanager
+from contextvars import ContextVar
 from pathlib import Path
 from typing import Any, AsyncIterator
 
@@ -21,6 +22,10 @@ class NinjaOneMCPGateway:
         self.gateway_dir = Path(settings.ninjaone_gateway_dir)
         self.python = Path(settings.ninjaone_gateway_python)
         self.env_file = Path(settings.ninjaone_gateway_env_file)
+        # Context-local so concurrent FastAPI requests never share MCP sessions.
+        self._active_session: ContextVar[ClientSession | None] = ContextVar(
+            f"ninjaone_mcp_session_{id(self)}", default=None
+        )
 
     def _gateway_environment(self) -> dict[str, str]:
         """Load gateway configuration without logging or exposing credentials."""
@@ -29,8 +34,6 @@ class NinjaOneMCPGateway:
                 f"Gateway environment file was not found: {self.env_file}"
             )
 
-        # Preserve Windows system variables (especially PATH) and let explicit
-        # process environment variables override values from the gateway .env.
         env = os.environ.copy()
         file_values = dotenv_values(self.env_file)
         for key, value in file_values.items():
@@ -69,31 +72,50 @@ class NinjaOneMCPGateway:
                 f"Could not connect to NinjaOne MCP gateway: {exc}"
             ) from exc
 
-    async def list_tools(self) -> list[dict[str, Any]]:
+    @asynccontextmanager
+    async def connection(self) -> AsyncIterator[ClientSession]:
+        """Reuse one initialized STDIO process for all tool calls in one agent turn."""
         async with self.session() as session:
-            result = await session.list_tools()
-            return [self._tool_to_dict(tool) for tool in result.tools]
+            token = self._active_session.set(session)
+            try:
+                yield session
+            finally:
+                self._active_session.reset(token)
 
-    async def call_tool(
-        self,
-        name: str,
-        arguments: dict[str, Any],
-    ) -> dict[str, Any]:
+    async def list_tools(self) -> list[dict[str, Any]]:
+        active = self._active_session.get()
+        if active is not None:
+            return await self._list_tools_from(active)
         async with self.session() as session:
-            result = await session.call_tool(name, arguments)
-            content = []
-            for item in result.content or []:
-                if hasattr(item, "text"):
-                    content.append(item.text)
-                else:
-                    content.append(str(item))
-            return {
-                "is_error": bool(result.isError),
-                "content": content,
-                "structured_content": getattr(
-                    result, "structuredContent", None
-                ),
-            }
+            return await self._list_tools_from(session)
+
+    async def _list_tools_from(self, session: ClientSession) -> list[dict[str, Any]]:
+        result = await session.list_tools()
+        return [self._tool_to_dict(tool) for tool in result.tools]
+
+    async def call_tool(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+        active = self._active_session.get()
+        if active is not None:
+            return await self._call_tool_on(active, name, arguments)
+        async with self.session() as session:
+            return await self._call_tool_on(session, name, arguments)
+
+    @staticmethod
+    async def _call_tool_on(
+        session: ClientSession, name: str, arguments: dict[str, Any]
+    ) -> dict[str, Any]:
+        result = await session.call_tool(name, arguments)
+        content = []
+        for item in result.content or []:
+            if hasattr(item, "text"):
+                content.append(item.text)
+            else:
+                content.append(str(item))
+        return {
+            "is_error": bool(result.isError),
+            "content": content,
+            "structured_content": getattr(result, "structuredContent", None),
+        }
 
     @staticmethod
     def _tool_to_dict(tool: Any) -> dict[str, Any]:
