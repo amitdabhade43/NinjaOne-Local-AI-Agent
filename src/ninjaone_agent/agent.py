@@ -181,21 +181,24 @@ def _tool_failed(result: dict[str, Any]) -> bool:
 
 def _direct_inventory_intent(message: str) -> dict[str, str] | None:
     """Recognize simple, unfiltered inventory list/count requests without an LLM round-trip."""
-    text = re.sub(r"\\s+", " ", (message or "").casefold()).strip()
-    if not text or re.search(r"\\b(where|whose|matching|search|details?|status|named|called|older than|newer than)\\b", text):
+    text = re.sub(r"\s+", " ", (message or "").casefold()).strip()
+    if not text or re.search(r"\b(where|whose|matching|search|details?|status|named|called|older than|newer than)\b", text):
         return None
-    count = bool(re.search(r"\\b(count|total|how many|number of)\\b", text))
-    list_intent = bool(re.search(r"\\b(list|show|display|get|fetch|all|give me|what are|which are)\\b", text))
-    implicit = bool(re.search(r"\\b(organizations?|orgs?|technicians?|devices?|endpoints?|users?|locations?|sites?|groups?)\\b", text))
+    count = bool(re.search(r"\b(count|total|how many|number of)\b", text))
+    list_intent = bool(re.search(r"\b(list|show|display|get|fetch|all|give me|what are|which are)\b", text))
+    implicit = bool(re.fullmatch(
+        r"(?:please\\s+)?(?:all\\s+)?(?:organizations?|orgs?|technicians?|devices?|endpoints?|users?|locations?|sites?|groups?)(?:\\s+(?:names?|list|count))?[?.!]*",
+        text,
+    ))
     if not (count or list_intent or implicit):
         return None
     targets = (
-        ("organizations", r"\\b(organizations?|orgs?|customers?)\\b"),
-        ("technicians", r"\\b(technicians?)\\b"),
-        ("devices", r"\\b(devices?|endpoints?|laptops?|servers?|workstations?)\\b"),
-        ("users", r"\\b(users?|employees?)\\b"),
-        ("locations", r"\\b(locations?|sites?)\\b"),
-        ("groups", r"\\b(groups?)\\b"),
+        ("organizations", r"\b(organizations?|orgs?|customers?)\b"),
+        ("technicians", r"\b(technicians?)\b"),
+        ("devices", r"\b(devices?|endpoints?|laptops?|servers?|workstations?)\b"),
+        ("users", r"\b(users?|employees?)\b"),
+        ("locations", r"\b(locations?|sites?)\b"),
+        ("groups", r"\b(groups?)\b"),
     )
     for name, pattern in targets:
         if re.search(pattern, text):
@@ -238,7 +241,7 @@ def _endpoint_candidate(result: dict[str, Any]) -> dict[str, Any] | None:
                 return item
             endpoint = item.get("endpoint")
             if isinstance(endpoint, str):
-                match = re.match(r"^GET\\s+(/\\S+)", endpoint.strip(), re.IGNORECASE)
+                match = re.match(r"^GET\s+(/\S+)", endpoint.strip(), re.IGNORECASE)
                 if match:
                     return {"method": "GET", "path": match.group(1), "endpoint": endpoint}
     return None
@@ -257,6 +260,18 @@ def _inventory_records(result: dict[str, Any]) -> list[dict[str, Any]]:
             if isinstance(payload, list):
                 return [record for record in payload if isinstance(record, dict)]
     return []
+
+
+def _inventory_total(result: dict[str, Any]) -> int | None:
+    """Use an explicit total/count field when the API paginates its collection."""
+    keys = ("total", "count", "totalCount", "total_count", "resultCount", "recordsTotal")
+    for payload in _tool_payloads(result):
+        for item in _walk_json(payload):
+            for key in keys:
+                value = item.get(key)
+                if isinstance(value, int) and not isinstance(value, bool):
+                    return value
+    return None
 
 
 def _tool_arguments(tool: dict[str, Any], preferred: dict[str, Any]) -> dict[str, Any] | None:
@@ -403,7 +418,9 @@ class NinjaOneAgent:
 
         records = _inventory_records(result)
         if intent["operation"] == "count":
-            answer = f"NinjaOne returned {len(records)} {resource} record(s)."
+            total = _inventory_total(result)
+            count = total if total is not None else len(records)
+            answer = f"NinjaOne returned {count} {resource} record(s)."
         elif records:
             answer = "\\n".join(json.dumps(row, ensure_ascii=False, default=str) for row in records)
         else:
