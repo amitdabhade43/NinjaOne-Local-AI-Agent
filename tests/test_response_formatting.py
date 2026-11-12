@@ -71,7 +71,9 @@ def test_structured_result_uses_fallback_for_large_result_sets():
 
 
 
-def test_people_search_default_view_contains_only_name_email_and_category():
+def test_people_directory_shows_only_account_name_and_email():
+    from ninjaone_agent.agent import _format_people_directory
+
     records = [{
         "id": 2,
         "firstName": "Rene",
@@ -82,15 +84,9 @@ def test_people_search_default_view_contains_only_name_email_and_category():
         "deviceIds": [50, 53],
         "matched_category": "console users",
     }]
-    compact = [{
-        "firstName": records[0]["firstName"],
-        "lastName": records[0]["lastName"],
-        "email": records[0]["email"],
-        "matched_category": records[0]["matched_category"],
-    }]
-    answer = NinjaOneAgent._format_records_fallback(compact, "Accounts matching 'Rene'")
-    assert "Rene Piuk" in answer
-    assert "rene@example.com" in answer
+    answer = _format_people_directory(records, "Rene")
+    assert "**1 account(s)**" in answer
+    assert "- **Rene Piuk** — rene@example.com" in answer
     assert "Enabled" not in answer
     assert "Administrator" not in answer
     assert "deviceIds" not in answer
