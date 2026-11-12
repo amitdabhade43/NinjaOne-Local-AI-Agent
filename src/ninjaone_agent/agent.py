@@ -168,6 +168,14 @@ def _tool_result_object(result: dict[str, Any]) -> dict[str, Any]:
     return {}
 
 
+def _tool_failed(result: dict[str, Any]) -> bool:
+    """Treat gateway-level error payloads as failures even when MCP isError is false."""
+    if result.get("is_error"):
+        return True
+    payload = _tool_result_object(result)
+    return bool(payload.get("error")) or payload.get("executed") is False
+
+
 class NinjaOneAgent:
     def __init__(self, settings: Settings):
         self.settings = settings
@@ -218,7 +226,7 @@ class NinjaOneAgent:
         self.pending.pop(approval_id, None)
         result = await self.gateway.call_tool(pending["tool_name"], arguments)
         return {
-            "status": "executed" if not result["is_error"] else "error",
+            "status": "error" if _tool_failed(result) else "executed",
             "tool": pending["tool_name"],
             "result": result,
             "verification": "The gateway accepted the operation response; independently verify the resulting device/resource state.",
@@ -525,7 +533,7 @@ class NinjaOneAgent:
 
                 try:
                     result = await self.gateway.call_tool(tool_name, arguments)
-                    transcript.append({"tool": tool_name, "status": "error" if result["is_error"] else "completed",
+                    transcript.append({"tool": tool_name, "status": "error" if _tool_failed(result) else "completed",
                                        "result": result})
                     tool_text = json.dumps(result, ensure_ascii=False, default=str)
                     if call_id:
