@@ -134,6 +134,23 @@ def _validate_tool_arguments(schema: dict[str, Any], arguments: dict[str, Any]) 
     return None
 
 
+def _likely_live_request(message: str) -> bool:
+    """Avoid a second planning completion for ordinary chat, but keep fuzzy RMM asks tool-first."""
+    text = (message or "").casefold()
+    indicators = (
+        "ninjaone", "organization", "organisations", "orgs", "customer", "location",
+        "site", "group", "device", "endpoint", "laptop", "machine", "computer",
+        "server", "workstation", "user", "technician", "alert", "incident",
+        "activity", "ticket", "policy", "patch", "update", "script", "automation",
+        "reboot", "restart", "shutdown", "service", "offline", "online",
+        "check in", "check-in", "last seen", "inventory", "asset", "software",
+        "hardware", "disk", "storage", "memory", "cpu", "compliance", "antivirus",
+        "backup", "report", "job", "task", "remediation", "fix", "repair",
+        "assign", "how many", "show me", "find all", "fleet",
+    )
+    return any(term in text for term in indicators)
+
+
 def _tool_result_object(result: dict[str, Any]) -> dict[str, Any]:
     """Read structured MCP content or parse its JSON text representation."""
     structured = result.get("structured_content")
@@ -321,7 +338,7 @@ class NinjaOneAgent:
 
                     # Some models accept the tools parameter but emit neither native
                     # tool_calls nor Qwen markup. Ask for one explicit tool plan.
-                    if not parsed and not used_fallback and available:
+                    if not parsed and not used_fallback and available and _likely_live_request(message):
                         tool_reference = json.dumps(
                             [{"name": t["name"], "description": t["description"],
                               "input_schema": t["input_schema"]} for t in available],
