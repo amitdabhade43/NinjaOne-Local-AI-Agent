@@ -259,6 +259,23 @@ def _people_name_search_intent(message: str) -> str | None:
     return None
 
 
+def _device_access_name_intent(message: str) -> str | None:
+    """Recognize a direct read-only question about one person's accessible devices."""
+    text = re.sub(r"\\s+", " ", (message or "")).strip()
+    patterns = (
+        r"(?:how many|number of|count of)\\s+(?:devices?\\s+)?(?:device\\s+)?access(?:ible\\s+devices?)?\\s+(?:does|do|has|have)\\s+(.+?)(?:\\s+in\\s+ninjaone)?[?.!]*$",
+        r"(?:how many|number of|count of)\\s+(?:accessible\\s+)?devices?\\s+(?:can|does)\\s+(.+?)\\s+access(?:\\s+in\\s+ninjaone)?[?.!]*$",
+        r"(?:show|list)\\s+(.+?)['’]s\\s+(?:accessible\\s+)?devices?[?.!]*$",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, text, flags=re.IGNORECASE)
+        if match:
+            name = match.group(1).strip(" \\'\\"")
+            if len(name.split()) >= 2 and not re.search(r"\\b(all users|everyone|users)\\b", name, re.I):
+                return name
+    return None
+
+
 def _format_people_directory(records: list[dict[str, Any]], name: str) -> str:
     """Render a minimal people directory: account name and email only."""
     lines = [f"### Accounts matching '{name}'", f"**{len(records)} account(s)**", ""]
@@ -764,8 +781,13 @@ class NinjaOneAgent:
                     continue
                 record_copy = dict(record)
                 record_copy["matched_category"] = label
-                identity = str(record.get("id") or record.get("uid") or record.get("email") or "")
-                key = (label, identity or json.dumps(record, sort_keys=True, default=str))
+                # Prefer cross-category stable identity. Category-specific numeric IDs
+                # can collide and must not prevent the same account being deduplicated.
+                email = str(record.get("email") or "").strip().casefold()
+                uid = str(record.get("uid") or "").strip().casefold()
+                identity = email or uid or str(record.get("id") or "")
+                fallback_name = " ".join(str(record.get(key) or "") for key in ("firstName", "lastName")).strip().casefold()
+                key = (identity or fallback_name, str(record.get("organizationId") or ""))
                 if key not in seen:
                     seen.add(key)
                     matches.append(record_copy)
@@ -783,6 +805,95 @@ class NinjaOneAgent:
         if unavailable:
             answer += " Search coverage is incomplete; these categories could not be queried: " + ", ".join(unavailable) + "."
         return {"answer": answer, "steps": steps, "pending_approvals": []}
+
+    async def _run_person_device_access(
+        self, name: str, by_name: dict[str, dict[str, Any]], model: str
+    ) -> dict[str, Any] | None:
+        """Use the local OpenAPI catalogue to fetch one end-user collection and count access IDs."""
+        call_tool = by_name.get("call")
+        if not call_tool:
+            return None
+
+        # The end-user collection response documents accessibleDeviceIds and
+        # assignedDeviceIds. One GET can answer this question without an LLM tool plan.
+        route = self.api_catalog.get("/v2/user/end-users", method="GET")
+        if not route:
+            logger.warning("Device-access fast path unavailable: end-user collection missing from local API catalogue.")
+            return None
+
+        endpoint = f"GET {route['path']}"
+        arguments = _tool_arguments(call_tool, {
+            "endpoint": endpoint, "path_params": {}, "query": {}, "body": None,
+        })
+        if arguments is None:
+            logger.warning("Connected MCP call schema cannot execute catalogue route %s.", endpoint)
+            return None
+
+        logger.info("Using local OpenAPI catalogue for person device-access query: %s", endpoint)
+        result = await self.gateway.call_tool("call", arguments)
+        steps = [{"tool": "call", "endpoint": endpoint,
+                  "status": "error" if _tool_failed(result) else "completed",
+                  "result": result}]
+        if _tool_failed(result):
+            return {
+                "model": model,
+                "answer": "NinjaOne could not retrieve the end-user directory. I cannot confirm this user's device access.",
+                "steps": steps, "pending_approvals": [],
+            }
+
+        records = _inventory_records(result)
+        matches = [record for record in records if _record_matches_person_name(record, name)]
+        if not matches:
+            return {
+                "model": model,
+                "answer": f"No end-user account matching '{name}' was found in the retrieved end-user directory.",
+                "steps": steps, "pending_approvals": [],
+            }
+
+        # Collapse duplicate records by email/UID; do not merge distinct accounts
+        # merely because their display names happen to match.
+        unique: dict[str, dict[str, Any]] = {}
+        for record in matches:
+            email = str(record.get("email") or "").strip().casefold()
+            uid = str(record.get("uid") or "").strip().casefold()
+            identifier = email or uid or str(record.get("id") or json.dumps(record, sort_keys=True, default=str))
+            unique.setdefault(identifier, record)
+
+        if len(unique) > 1:
+            choices = [
+                f"- {item.get('firstName', '')} {item.get('lastName', '')} — {item.get('email', 'email unavailable')}"
+                for item in unique.values()
+            ]
+            answer = (
+                f"More than one end-user account matches '{name}'. Please specify which account:\\n"
+                + "\\n".join(choices)
+            )
+            return {"model": model, "answer": answer, "steps": steps, "pending_approvals": []}
+
+        person = next(iter(unique.values()))
+        accessible = person.get("accessibleDeviceIds")
+        if accessible is None:
+            # Some organization-scoped responses use deviceIds for access.
+            accessible = person.get("deviceIds")
+        if not isinstance(accessible, list):
+            return {
+                "model": model,
+                "answer": f"I found {person.get('firstName', '')} {person.get('lastName', '')}, but NinjaOne did not return an accessible-device list, so I cannot calculate the count.",
+                "steps": steps, "pending_approvals": [],
+            }
+
+        device_ids = {str(value) for value in accessible if value is not None}
+        assigned = person.get("assignedDeviceIds")
+        assigned_count = len({str(value) for value in assigned if value is not None}) if isinstance(assigned, list) else None
+        answer = (
+            f"**{person.get('firstName', '')} {person.get('lastName', '')}** "
+            f"({person.get('email', 'email unavailable')}) can access **{len(device_ids)} device(s)**."
+        )
+        if assigned_count is not None:
+            answer += f" Assigned devices: **{assigned_count}**."
+        if person.get("fullPortalAccess") is True:
+            answer += " The account also has full portal access."
+        return {"model": model, "answer": answer, "steps": steps, "pending_approvals": []}
 
     async def _run_connected(self, message: str, model: str | None = None,
                              history: list[dict[str, str]] | None = None) -> dict[str, Any]:
@@ -844,6 +955,14 @@ class NinjaOneAgent:
                 "steps": [],
                 "pending_approvals": [],
             }
+
+        # Fast path: a named person's device-access count is a single catalogue-backed GET.
+        device_access_name = _device_access_name_intent(message)
+        if device_access_name and "call" in by_name:
+            logger.info("Using catalogue-backed end-user device-access lookup for %r.", device_access_name)
+            access_result = await self._run_person_device_access(device_access_name, by_name, selected)
+            if access_result is not None:
+                return access_result
 
         # Fast path: simple inventory lists/counts use endpoint discovery + one GET
         # directly. Complex, filtered, and all write requests stay on the full agent path.
