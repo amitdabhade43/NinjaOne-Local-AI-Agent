@@ -41,7 +41,7 @@ class NinjaOneAgent:
     def __init__(self, settings: Settings):
         self.settings = settings
         self.foundry = FoundryClient(settings)
-        self.gateway = NinjaOneMCPGateway(settings.ninjaone_mcp_url)
+        self.gateway = NinjaOneMCPGateway(settings)
         # Pending approvals are intentionally in-memory and expire on process restart.
         self.pending: dict[str, dict[str, Any]] = {}
 
