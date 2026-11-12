@@ -1,3 +1,4 @@
+import asyncio
 from contextlib import asynccontextmanager
 from contextvars import ContextVar
 from types import SimpleNamespace
@@ -21,8 +22,8 @@ class FakeSession:
         return SimpleNamespace(content=[], isError=False, structuredContent={"ok": True})
 
 
-@pytest.mark.asyncio
-async def test_connection_reuses_one_stdio_session_for_multiple_tool_calls(monkeypatch):
+def test_connection_reuses_one_stdio_session_for_multiple_tool_calls(monkeypatch):
+    async def scenario():
     gateway = object.__new__(NinjaOneMCPGateway)
     gateway._active_session = ContextVar("test_mcp_session", default=None)
     fake = FakeSession()
@@ -42,12 +43,16 @@ async def test_connection_reuses_one_stdio_session_for_multiple_tool_calls(monke
         assert result["structured_content"] == {"ok": True}
 
     assert opened == 1
+
+    asyncio.run(scenario())
     assert fake.list_calls == 1
     assert fake.tool_calls == [("discover_endpoints", {"intent": "devices"})]
 
+    asyncio.run(scenario())
 
-@pytest.mark.asyncio
-async def test_tool_call_outside_connection_opens_its_own_session(monkeypatch):
+
+def test_tool_call_outside_connection_opens_its_own_session(monkeypatch):
+    async def scenario():
     gateway = object.__new__(NinjaOneMCPGateway)
     gateway._active_session = ContextVar("test_mcp_session_outside", default=None)
     fake = FakeSession()
