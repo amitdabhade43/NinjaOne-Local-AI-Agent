@@ -457,6 +457,61 @@ class NinjaOneAgent:
             return await self._run_connected(message, model, history)
 
 
+    def _format_structured_result(
+        self, model: str, request: str, records: list[dict[str, Any]], fallback: str
+    ) -> str:
+        """Use the local LLM to present structured records; retain a safe fallback."""
+        if not records or len(records) > 30:
+            return fallback
+        try:
+            response = self.foundry.complete(
+                model=model,
+                messages=[
+                    {"role": "system", "content": (
+                        "Format verified NinjaOne API results for an IT administrator. "
+                        "Return clean Markdown only, never raw JSON or code fences. "
+                        "Do not invent, infer, rename, or alter values. Preserve every record "
+                        "and distinguish duplicate names by category and ID. Use a short heading "
+                        "and count, then numbered compact record sections with readable labels. "
+                        "Use tables only when useful. Omit null, empty, internal, and irrelevant "
+                        "fields. Never expose tokens, secrets, MFA seeds, or credentials. "
+                        "Keep IDs and values exact."
+                    )},
+                    {"role": "user", "content": (
+                        "User request: " + request + "\nVerified API records:\n"
+                        + json.dumps(records, ensure_ascii=False, default=str)
+                    )},
+                ],
+            )
+            answer = _clean_model_content(response.choices[0].message.content)
+            if answer and not _tool_calls_from_content(answer) and not _json_object(answer):
+                return answer
+        except Exception:
+            logger.exception("Local LLM result formatting failed; using deterministic formatting.")
+        return fallback
+
+    @staticmethod
+    def _format_records_fallback(records: list[dict[str, Any]], heading: str) -> str:
+        """Readable Markdown fallback that never depends on another model call."""
+        lines = [f"### {heading}", f"**{len(records)} record(s)**"]
+        hidden = {"uid", "matched_category"}
+        for index, record in enumerate(records, start=1):
+            name = (" ".join(str(record.get(key)) for key in ("firstName", "lastName")
+                             if record.get(key)) or record.get("displayName")
+                    or record.get("name") or record.get("email") or f"Record {index}")
+            category = record.get("matched_category") or record.get("userType")
+            lines.extend(["", f"**{index}. {name}**" + (f" — {category}" if category else "")])
+            for key, value in record.items():
+                if key in hidden or value in (None, "", [], {}):
+                    continue
+                label = re.sub(r"([a-z])([A-Z])", r"\1 \2", key).replace("_", " ").capitalize()
+                if isinstance(value, bool):
+                    value = "Yes" if value else "No"
+                elif isinstance(value, list):
+                    value = ", ".join(str(item) for item in value)
+                lines.append(f"- **{label}:** {value}")
+        return "\n".join(lines)
+
     async def _run_direct_inventory(
         self, intent: dict[str, str], by_name: dict[str, dict[str, Any]]
     ) -> dict[str, Any] | None:
@@ -538,9 +593,13 @@ class NinjaOneAgent:
             count = total if total is not None else len(records)
             answer = f"NinjaOne returned {count} {resource} record(s)."
         elif records:
-            answer = "\\n".join(json.dumps(row, ensure_ascii=False, default=str) for row in records)
+            fallback = self._format_records_fallback(records[:30], resource.title())
+            answer = self._format_structured_result(
+                self.foundry.resolve_model(), f"{intent['operation']} {resource}",
+                records[:30], fallback
+            )
         else:
-            answer = json.dumps(_tool_payloads(result), ensure_ascii=False, indent=2, default=str)
+            answer = "NinjaOne returned a response, but no recognizable records were present."
         return {"answer": answer, "steps": steps, "pending_approvals": []}
 
     async def _run_people_name_search(
@@ -654,10 +713,11 @@ class NinjaOneAgent:
                 "steps": steps, "pending_approvals": [],
             }
         if matches:
-            answer = (
-                f"Found {len(matches)} matching record(s) for '{name}' across the people categories retrieved: "
-                + ", ".join(searched) + ".\n"
-                + "\n".join(json.dumps(item, ensure_ascii=False, default=str) for item in matches)
+            fallback = self._format_records_fallback(matches, f"People matching '{name}'")
+            answer = self._format_structured_result(
+                self.foundry.resolve_model(),
+                f"Find people matching the name {name}. Categories searched: {', '.join(searched)}.",
+                matches, fallback,
             )
         else:
             answer = f"No matching people records containing '{name}' were found in the retrieved categories: " + ", ".join(searched) + "."
