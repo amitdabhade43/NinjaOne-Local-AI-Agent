@@ -238,11 +238,11 @@ def _direct_inventory_intent(message: str) -> dict[str, str] | None:
 
 def _people_name_search_intent(message: str) -> str | None:
     """Extract an explicit name filter for cross-category people searches."""
-    text = re.sub(r"\\s+", " ", (message or "")).strip()
+    text = re.sub(r"\s+", " ", (message or "")).strip()
     patterns = (
-        r"\\b(?:with|whose)\\s+(?:first\\s+|last\\s+|full\\s+)?name\\s+(?:contains?|is|starts?\\s+with)\\s+['\"“]?([^'\"”?.!,;]+)",
-        r"\\b(?:users?|technicians?|contacts?|people)\\s+(?:named|called)\\s+['\"“]?([^'\"”?.!,;]+)",
-        r"\\bname\\s+contains?\\s+['\"“]?([^'\"”?.!,;]+)",
+        r"\b(?:with|whose)\s+(?:first\s+|last\s+|full\s+)?name\s+(?:contains?|is|starts?\s+with)\s+['\"“]?([^'\"”?.!,;]+)",
+        r"\b(?:users?|technicians?|contacts?|people)\s+(?:named|called)\s+['\"“]?([^'\"”?.!,;]+)",
+        r"\bname\s+contains?\s+['\"“]?([^'\"”?.!,;]+)",
     )
     for pattern in patterns:
         match = re.search(pattern, text, flags=re.IGNORECASE)
