@@ -293,7 +293,7 @@ class NinjaOneAgent:
             return {
                 "model": selected,
                 "answer": "The NinjaOne MCP gateway is unavailable. No live tenant data was retrieved and no operation was executed.",
-                "steps": transcript if "transcript" in locals() else [],
+                "steps": [],
                 "pending_approvals": [],
             }
         skill_query = (prior_context + " " + message).strip()
