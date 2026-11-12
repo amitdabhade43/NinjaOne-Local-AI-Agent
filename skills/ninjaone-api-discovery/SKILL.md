@@ -8,12 +8,12 @@ description: Discover, inspect, and execute NinjaOne API v2 operations from fuzz
 ## Workflow
 
 1. Translate the request into resources, actions, filters, scope, and desired output.
-2. Call `discover_endpoints` with a concise natural-language intent. Narrow with category or HTTP method only when supported by evidence.
+2. If the gateway exposes `discover_endpoints`, call it with a concise natural-language intent. If it exposes the legacy `find_endpoint`, use that instead.
 3. Compare candidate summaries. Do not select solely by a similar endpoint name; use summary, tags, description, and operation ID.
-4. Call `inspect_endpoint` for the selected exact endpoint key.
+4. If available, call `inspect_endpoint` for the selected exact endpoint key; with the legacy gateway, use `describe_endpoint`.
 5. Read required path/query parameters, request-body schema, enums, and response shape.
 6. Resolve IDs from live API responses. Never fabricate an ID.
-7. Call `execute_endpoint` with separate `path_params`, `query`, and `body` objects. Use `execute_raw_request` only when the exact method/path has been matched to the OpenAPI catalogue.
+7. With the schema-driven gateway, call `execute_endpoint` with separate `path_params`, `query`, and `body` objects. With the legacy gateway, use `call` after describing the endpoint. Use the raw-request tool only when the exact method/path has been matched to the OpenAPI catalogue.
 8. For GET results, inspect `complete` and `truncated`. If incomplete, use documented pagination or explicitly state the limitation.
 9. For multi-resource questions, execute each necessary read step and join records using stable IDs. Explain missing joins rather than guessing.
 
