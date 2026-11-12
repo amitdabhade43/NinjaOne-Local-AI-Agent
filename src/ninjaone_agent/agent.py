@@ -638,58 +638,70 @@ class NinjaOneAgent:
         seen: set[tuple[str, str]] = set()
 
         for label, query in categories:
-            discovery_args = _tool_arguments(by_name["find_endpoint"], {"query": query})
-            if discovery_args is None:
-                unavailable.append(label)
-                continue
-            found = await self.gateway.call_tool("find_endpoint", discovery_args)
-            steps.append({"tool": "find_endpoint", "category": label,
-                          "status": "error" if _tool_failed(found) else "completed",
-                          "result": found})
-            if _tool_failed(found):
-                unavailable.append(label)
-                continue
+            cache_key = f"people:{label}"
+            cached_route = self._endpoint_cache.get(cache_key)
+            if cached_route:
+                candidate = cached_route["candidate"]
+                detail = cached_route["detail"]
+                endpoint = detail.get("endpoint") or candidate.get("endpoint") or (
+                    f"{candidate.get('method')} {candidate.get('path')}"
+                )
+                logger.info("People endpoint metadata cache hit for %s.", label)
+            else:
+                discovery_args = _tool_arguments(by_name["find_endpoint"], {"query": query})
+                if discovery_args is None:
+                    unavailable.append(label)
+                    continue
+                found = await self.gateway.call_tool("find_endpoint", discovery_args)
+                steps.append({"tool": "find_endpoint", "category": label,
+                              "status": "error" if _tool_failed(found) else "completed",
+                              "result": found})
+                if _tool_failed(found):
+                    unavailable.append(label)
+                    continue
 
-            candidate = _endpoint_candidate(found, query)
-            if not candidate:
-                unavailable.append(label)
-                continue
-            # Avoid treating a singular/detail endpoint (for example an app-user-contact
-            # lookup) as a complete collection of people.
-            expected_collections = {
-                "console users": {"users"},
-                "end users": {"end-users"},
-                "technicians": {"technicians"},
-                "contacts": {"contacts"},
-            }
-            candidate_path = str(candidate.get("path") or "").rstrip("/")
-            final_segment = candidate_path.split("/")[-1].casefold()
-            if final_segment not in expected_collections[label]:
-                unavailable.append(label)
-                continue
-            endpoint = candidate.get("endpoint") or (
-                f"{candidate.get('method')} {candidate.get('path')}"
-            )
-            inspect_args = _tool_arguments(
-                by_name["describe_endpoint"], {"endpoint": endpoint}
-            )
-            if inspect_args is None:
-                unavailable.append(label)
-                continue
-            inspected = await self.gateway.call_tool("describe_endpoint", inspect_args)
-            steps.append({"tool": "describe_endpoint", "category": label,
-                          "status": "error" if _tool_failed(inspected) else "completed",
-                          "result": inspected})
-            if _tool_failed(inspected):
-                unavailable.append(label)
-                continue
+                candidate = _endpoint_candidate(found, query)
+                if not candidate:
+                    unavailable.append(label)
+                    continue
+                # Ensure discovery selected the collection, not a singular detail route.
+                expected_collections = {
+                    "console users": {"users"},
+                    "end users": {"end-users"},
+                    "technicians": {"technicians"},
+                    "contacts": {"contacts"},
+                }
+                candidate_path = str(candidate.get("path") or "").rstrip("/")
+                final_segment = candidate_path.split("/")[-1].casefold()
+                if final_segment not in expected_collections[label]:
+                    unavailable.append(label)
+                    continue
+                endpoint = candidate.get("endpoint") or (
+                    f"{candidate.get('method')} {candidate.get('path')}"
+                )
+                inspect_args = _tool_arguments(
+                    by_name["describe_endpoint"], {"endpoint": endpoint}
+                )
+                if inspect_args is None:
+                    unavailable.append(label)
+                    continue
+                inspected = await self.gateway.call_tool("describe_endpoint", inspect_args)
+                steps.append({"tool": "describe_endpoint", "category": label,
+                              "status": "error" if _tool_failed(inspected) else "completed",
+                              "result": inspected})
+                if _tool_failed(inspected):
+                    unavailable.append(label)
+                    continue
+                detail = _tool_result_object(inspected)
 
-            detail = _tool_result_object(inspected)
             method = str(detail.get("method") or candidate.get("method") or "").upper()
             path = detail.get("path") or candidate.get("path")
             if method != "GET" or not isinstance(path, str) or not path.startswith("/") or "{" in path:
+                self._endpoint_cache.clear()
                 unavailable.append(label)
                 continue
+            if not cached_route:
+                self._endpoint_cache.set(cache_key, {"candidate": candidate, "detail": detail})
 
             call_args = _tool_arguments(by_name["call"], {
                 "endpoint": detail.get("endpoint") or endpoint,
