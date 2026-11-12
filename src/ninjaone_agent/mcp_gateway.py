@@ -82,22 +82,32 @@ class NinjaOneMCPGateway:
                 self._active_session.reset(token)
 
     async def list_tools(self) -> list[dict[str, Any]]:
-        active = self._active_session.get()
-        if active is not None:
-            return await self._list_tools_from(active)
-        async with self.session() as session:
-            return await self._list_tools_from(session)
+        try:
+            active = self._active_session.get()
+            if active is not None:
+                return await self._list_tools_from(active)
+            async with self.session() as session:
+                return await self._list_tools_from(session)
+        except MCPGatewayError:
+            raise
+        except Exception as exc:
+            raise MCPGatewayError(f"Could not list NinjaOne MCP tools: {exc}") from exc
 
     async def _list_tools_from(self, session: ClientSession) -> list[dict[str, Any]]:
         result = await session.list_tools()
         return [self._tool_to_dict(tool) for tool in result.tools]
 
     async def call_tool(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
-        active = self._active_session.get()
-        if active is not None:
-            return await self._call_tool_on(active, name, arguments)
-        async with self.session() as session:
-            return await self._call_tool_on(session, name, arguments)
+        try:
+            active = self._active_session.get()
+            if active is not None:
+                return await self._call_tool_on(active, name, arguments)
+            async with self.session() as session:
+                return await self._call_tool_on(session, name, arguments)
+        except MCPGatewayError:
+            raise
+        except Exception as exc:
+            raise MCPGatewayError(f"NinjaOne MCP tool '{name}' failed: {exc}") from exc
 
     @staticmethod
     async def _call_tool_on(
