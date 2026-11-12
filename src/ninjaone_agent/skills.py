@@ -10,6 +10,18 @@ DEFAULT_SKILLS_DIR = DEFAULT_REPO_ROOT / "skills"
 DEFAULT_AGENT_FILE = DEFAULT_REPO_ROOT / "agents" / "ninjaone-expert.md"
 ALWAYS_LOAD = {"ninjaone-api-discovery"}
 SYNONYMS = {
+    "device": {"device", "devices"},
+    "devices": {"device", "devices"},
+    "technician": {"technician", "technicians"},
+    "technicians": {"technician", "technicians"},
+    "organization": {"organization", "organizations"},
+    "organizations": {"organization", "organizations"},
+    "user": {"user", "users"},
+    "users": {"user", "users"},
+    "location": {"location", "locations"},
+    "locations": {"location", "locations"},
+    "group": {"group", "groups"},
+    "groups": {"group", "groups"},
     "machine": {"device", "devices"},
     "pc": {"device", "devices"},
     "pcs": {"device", "devices"},
