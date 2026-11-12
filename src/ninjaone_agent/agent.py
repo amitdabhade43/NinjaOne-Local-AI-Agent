@@ -639,8 +639,8 @@ class NinjaOneAgent:
         if matches:
             answer = (
                 f"Found {len(matches)} matching record(s) for '{name}' across the people categories retrieved: "
-                + ", ".join(searched) + ".\\n"
-                + "\\n".join(json.dumps(item, ensure_ascii=False, default=str) for item in matches)
+                + ", ".join(searched) + ".\n"
+                + "\n".join(json.dumps(item, ensure_ascii=False, default=str) for item in matches)
             )
         else:
             answer = f"No matching people records containing '{name}' were found in the retrieved categories: " + ", ".join(searched) + "."
