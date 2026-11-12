@@ -16,8 +16,10 @@ class FoundryUnavailable(RuntimeError):
 class FoundryClient:
     """OpenAI-compatible adapter with automatic Foundry Local port discovery."""
 
+    # Foundry Local binds to loopback. Use character classes for dots so this
+    # pattern stays readable without escape-sequence ambiguity.
     _LOCAL_URL = re.compile(
-        r"https?://(?:127\\.0\\.0\\.1|localhost|\\[::1\\])(?::\\d+)?(?:/[^\\s]*)?",
+        r"https?://(?:127[.]0[.]0[.]1|localhost)(?::[0-9]+)?(?:/[^ ]*)?",
         re.IGNORECASE,
     )
 
