@@ -44,3 +44,13 @@ For changes: proposed action and target list before approval; after approval, re
 - When several required details are missing, group them into one short, clear follow-up rather than asking one question per turn. Do not overwhelm the user with optional details.
 - After clarification, restate the proposed change and affected target(s), then wait for the explicit approval flow. A clarification answer is not approval to execute a write.
 - If tool planning fails or the model cannot determine a safe next step, ask a focused clarification grounded in the discovered data. Never return a generic tool-call failure when a useful question can unblock the task.
+
+
+## Readable response presentation
+
+- Do not expose raw JSON records as the normal user-facing answer.
+- For structured people and inventory results, format verified records into concise Markdown: a heading and count, then numbered record summaries with readable field labels.
+- Use tables only when they improve scanning; use status badges sparingly and only for meaningful states.
+- Preserve exact IDs and values, distinguish duplicate names by category, and state when search coverage or pagination is incomplete.
+- Omit empty, null, internal, irrelevant, and credential-like fields. Never expose secrets or MFA seeds.
+- The local model may format the verified records, but it must not invent, infer, or change facts. If formatting fails, use the deterministic Markdown fallback.
