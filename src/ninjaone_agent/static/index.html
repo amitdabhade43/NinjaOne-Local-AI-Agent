@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>NinjaOne Local AI Agent</title>
+<style>
+:root{color-scheme:dark;font-family:Segoe UI,Arial,sans-serif;background:#10151d;color:#e8edf5}
+*{box-sizing:border-box}body{margin:0;min-height:100vh;display:flex;flex-direction:column}
+header{padding:16px 22px;border-bottom:1px solid #293342;display:flex;justify-content:space-between;align-items:center}
+h1{font-size:18px;margin:0}.sub{font-size:12px;color:#9eacbd;margin-top:4px}
+main{width:min(980px,100%);margin:0 auto;padding:20px;display:flex;flex-direction:column;gap:14px;flex:1}
+#status{font-size:12px;color:#9eacbd}.toolbar{display:flex;gap:10px;align-items:center}
+select,textarea,button{font:inherit;border:1px solid #39485c;border-radius:8px;background:#182231;color:#e8edf5;padding:10px}
+select{max-width:360px}#chat{display:flex;flex-direction:column;gap:12px;flex:1}
+.msg{padding:13px 15px;border:1px solid #29384a;border-radius:10px;white-space:pre-wrap;line-height:1.5;overflow-wrap:anywhere}
+.user{background:#1a2c42;align-self:flex-end;max-width:88%}.assistant{background:#171f2b;align-self:stretch}
+form{display:flex;gap:10px}textarea{flex:1;resize:vertical;min-height:58px}button{cursor:pointer;background:#245da8;border-color:#3979c8}button:disabled{opacity:.5;cursor:wait}
+.approval{border:1px solid #a9782c;background:#302719;border-radius:10px;padding:14px}.approval button{margin:10px 8px 0 0}
+.small{font-size:12px;color:#9eacbd}pre{white-space:pre-wrap;overflow-wrap:anywhere}
+</style>
+</head>
+<body>
+<header><div><h1>NinjaOne Local AI Agent</h1><div class="sub">Local Foundry model · NinjaOne MCP gateway</div></div><div id="status">Connecting…</div></header>
+<main>
+<div class="toolbar"><label for="model">Model</label><select id="model"><option value="">Loading models…</option></select><button id="refresh" type="button">Refresh</button></div>
+<div id="chat"><div class="msg assistant">Hello. Ask a question about your NinjaOne environment. Live data is retrieved through the configured MCP gateway.</div></div>
+<form id="form"><textarea id="message" placeholder="Ask about organizations, devices, users, alerts…" required></textarea><button id="send">Send</button></form>
+<div class="small">Read operations run automatically. Write operations pause for approval. Destructive operations are blocked by default.</div>
+</main>
+<script>
+const chat=document.querySelector('#chat'), modelSelect=document.querySelector('#model'), statusEl=document.querySelector('#status');
+const history=[];
+function add(role,text){const el=document.createElement('div');el.className='msg '+role;el.textContent=text;chat.appendChild(el);chat.scrollTop=chat.scrollHeight;return el}
+async function load(){
+ try{
+  const [m,t]=await Promise.all([fetch('/api/models').then(r=>r.json()),fetch('/api/tools').then(r=>r.json())]);
+  modelSelect.innerHTML='';(m.models||[]).forEach(x=>{const o=document.createElement('option');o.value=x.id;o.textContent=x.id;modelSelect.appendChild(o)});
+  statusEl.textContent='Ready · '+(t.count??0)+' MCP tools';
+ }catch(e){statusEl.textContent='Connection issue · check Foundry/MCP';}
+}
+async function send(){
+ const input=document.querySelector('#message'), button=document.querySelector('#send'), text=input.value.trim();if(!text)return;
+ input.value='';button.disabled=true;add('user',text);
+ const pending=add('assistant','Working…');
+ try{
+  const r=await fetch('/api/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message:text,model:modelSelect.value||null,history})});
+  const data=await r.json();if(!r.ok)throw new Error(data.detail||r.statusText);
+  pending.textContent=data.answer||'No answer returned.';
+  history.push({role:'user',content:text},{role:'assistant',content:pending.textContent});
+  (data.steps||[]).forEach(s=>{if(s.status==='error')pending.textContent+='\n\nTool error ('+s.tool+'): '+(s.error||'Unknown error')});
+  (data.pending_approvals||[]).forEach(p=>showApproval(p));
+ }catch(e){pending.textContent='Error: '+e.message}
+ finally{button.disabled=false;input.focus()}
+}
+function showApproval(p){
+ const box=document.createElement('div');box.className='approval';
+ const title=document.createElement('strong');title.textContent='Approval required: '+p.tool;box.appendChild(title);
+ const details=document.createElement('pre');details.textContent=JSON.stringify(p.arguments,null,2);box.appendChild(details);
+ const approve=document.createElement('button');approve.textContent='Approve and execute';
+ const reject=document.createElement('button');reject.textContent='Reject';reject.style.background='#5a3940';
+ async function resolve(approved){
+  approve.disabled=reject.disabled=true;
+  try{const r=await fetch('/api/approvals/'+encodeURIComponent(p.approval_id),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({approved})});const d=await r.json();if(!r.ok)throw new Error(d.detail||r.statusText);add('assistant',d.status==='executed'?'Operation completed. Tool result:\n'+JSON.stringify(d.result,null,2):d.message||d.status)}
+  catch(e){add('assistant','Approval error: '+e.message)}
+  box.remove()
+ }
+ approve.onclick=()=>resolve(true);reject.onclick=()=>resolve(false);box.append(approve,reject);chat.appendChild(box);
+}
+document.querySelector('#form').addEventListener('submit',e=>{e.preventDefault();send()});
+document.querySelector('#refresh').addEventListener('click',load);load();
+</script>
+</body></html>
