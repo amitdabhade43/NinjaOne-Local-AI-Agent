@@ -187,7 +187,7 @@ def _direct_inventory_intent(message: str) -> dict[str, str] | None:
     count = bool(re.search(r"\b(count|total|how many|number of)\b", text))
     list_intent = bool(re.search(r"\b(list|show|display|get|fetch|all|give me|what are|which are)\b", text))
     implicit = bool(re.fullmatch(
-        r"(?:please\\s+)?(?:all\\s+)?(?:organizations?|orgs?|technicians?|devices?|endpoints?|users?|locations?|sites?|groups?)(?:\\s+(?:names?|list|count))?[?.!]*",
+        r"(?:please\s+)?(?:all\s+)?(?:organizations?|orgs?|technicians?|devices?|endpoints?|users?|locations?|sites?|groups?)(?:\s+(?:names?|list|count))?[?.!]*",
         text,
     ))
     if not (count or list_intent or implicit):
