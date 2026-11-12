@@ -237,7 +237,7 @@ def _direct_inventory_intent(message: str) -> dict[str, str] | None:
 
 
 def _people_name_search_intent(message: str) -> str | None:
-    """Extract an explicit name filter for cross-category people searches."""
+    """Extract only the person's name, excluding trailing platform/scope wording."""
     text = re.sub(r"\s+", " ", (message or "")).strip()
     patterns = (
         r"\b(?:with|whose)\s+(?:first\s+|last\s+|full\s+)?name(?:\s+(?:contains?|is|starts?\s+with))?\s+['\"“]?([^'\"”?.!,;]+)",
@@ -248,10 +248,13 @@ def _people_name_search_intent(message: str) -> str | None:
         match = re.search(pattern, text, flags=re.IGNORECASE)
         if match:
             name = match.group(1).strip().strip(" '\"“”")
+            name = re.split(
+                r"\s+(?:in|on|from)\s+(?:ninjaone|the\s+ninjaone|my\s+tenant)\b",
+                name, maxsplit=1, flags=re.IGNORECASE,
+            )[0].strip()
             if len(name) >= 2:
                 return name
     return None
-
 
 def _record_matches_person_name(record: dict[str, Any], query: str) -> bool:
     """Match a name against common NinjaOne person fields without guessing identity."""
@@ -593,11 +596,8 @@ class NinjaOneAgent:
             count = total if total is not None else len(records)
             answer = f"NinjaOne returned {count} {resource} record(s)."
         elif records:
-            fallback = self._format_records_fallback(records[:30], resource.title())
-            answer = self._format_structured_result(
-                model, f"{intent['operation']} {resource}",
-                records[:30], fallback
-            )
+            # Avoid a second Foundry completion for routine inventory presentation.
+            answer = self._format_records_fallback(records[:30], resource.title())
         else:
             answer = "NinjaOne returned a response, but no recognizable records were present."
         return {"answer": answer, "steps": steps, "pending_approvals": []}
@@ -713,12 +713,17 @@ class NinjaOneAgent:
                 "steps": steps, "pending_approvals": [],
             }
         if matches:
-            fallback = self._format_records_fallback(matches, f"People matching '{name}'")
-            answer = self._format_structured_result(
-                model,
-                f"Find people matching the name {name}. Categories searched: {', '.join(searched)}.",
-                matches, fallback,
-            )
+            # Default directory view: names and email addresses only.
+            # Additional fields are retrieved when the user explicitly asks for them.
+            compact = [{
+                "firstName": record.get("firstName") or record.get("first_name"),
+                "lastName": record.get("lastName") or record.get("last_name"),
+                "displayName": record.get("displayName") or record.get("display_name"),
+                "name": record.get("name"),
+                "email": record.get("email"),
+                "matched_category": record.get("matched_category"),
+            } for record in matches]
+            answer = self._format_records_fallback(compact, f"Accounts matching '{name}'")
         else:
             answer = f"No matching people records containing '{name}' were found in the retrieved categories: " + ", ".join(searched) + "."
         if unavailable:
