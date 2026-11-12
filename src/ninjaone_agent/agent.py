@@ -482,6 +482,8 @@ class NinjaOneAgent:
         # directly. Complex, filtered, and all write requests stay on the full agent path.
         direct_intent = _direct_inventory_intent(message)
         if direct_intent and {"find_endpoint", "describe_endpoint", "call"}.issubset(tool_names):
+            logger.info("Using direct read-only inventory path for %s (%s).",
+                        direct_intent["resource"], direct_intent["operation"])
             direct_result = await self._run_direct_inventory(direct_intent, by_name)
             if direct_result is not None:
                 direct_result["model"] = selected
