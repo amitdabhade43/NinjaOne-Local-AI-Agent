@@ -58,7 +58,7 @@ Current skill areas:
 - Reports and compliance
 - Backup, IT asset management, knowledge and access
 
-The loader always includes API-discovery guidance and loads only the best matching domain skills for each request. It does not load every skill on every turn.
+The loader always includes API-discovery guidance and loads only the best matching domain skills for each request. It does not load every skill on every turn. Retrieval combines the existing synonym/typo-aware lexical router with a local SQLite FTS5 index over each skill's name, description, and full Markdown body. The FTS index is held in process memory and rebuilt automatically when a skill file changes; if SQLite was built without FTS5, the lexical router remains available.
 
 ## Requirements
 
@@ -187,7 +187,7 @@ $env:PYTHONPATH = "src"
 .\.venv\Scripts\python.exe -m pytest -v
 ~~~
 
-The tests are local and do not require Foundry or a live NinjaOne tenant. They cover tool-call parsing, argument validation, skill selection, operation-risk classification, approval-token construction, and MCP session reuse. Live integration must still be checked against your Foundry runtime, gateway environment, NinjaOne API permissions, and a controlled tenant.
+The tests are local and do not require Foundry or a live NinjaOne tenant. They cover tool-call parsing, argument validation, lexical and FTS5 skill selection, operation-risk classification, approval-token construction, and MCP session reuse. Live integration must still be checked against your Foundry runtime, gateway environment, NinjaOne API permissions, and a controlled tenant.
 
 ## Security limitations
 
