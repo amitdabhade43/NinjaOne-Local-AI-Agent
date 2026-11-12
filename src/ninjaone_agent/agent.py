@@ -713,17 +713,19 @@ class NinjaOneAgent:
                 "steps": steps, "pending_approvals": [],
             }
         if matches:
-            # Default directory view: names and email addresses only.
+            # Default directory view is intentionally minimal: account name + email only.
             # Additional fields are retrieved when the user explicitly asks for them.
-            compact = [{
-                "firstName": record.get("firstName") or record.get("first_name"),
-                "lastName": record.get("lastName") or record.get("last_name"),
-                "displayName": record.get("displayName") or record.get("display_name"),
-                "name": record.get("name"),
-                "email": record.get("email"),
-                "matched_category": record.get("matched_category"),
-            } for record in matches]
-            answer = self._format_records_fallback(compact, f"Accounts matching '{name}'")
+            lines = [f"### Accounts matching '{name}'", f"**{len(matches)} account(s)**", ""]
+            for record in matches:
+                account_name = (
+                    " ".join(str(record.get(key)) for key in ("firstName", "lastName")
+                             if record.get(key))
+                    or record.get("displayName") or record.get("display_name")
+                    or record.get("name") or record.get("username") or "Unnamed account"
+                )
+                email = record.get("email") or "Email not available"
+                lines.append(f"- **{account_name}** — {email}")
+            answer = "\n".join(lines)
         else:
             answer = f"No matching people records containing '{name}' were found in the retrieved categories: " + ", ".join(searched) + "."
         if unavailable:
