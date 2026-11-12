@@ -1,150 +1,201 @@
 # NinjaOne Local AI Agent
 
-A self-hosted, browser-based NinjaOne assistant. It uses locally hosted models exposed through Microsoft Foundry Local and connects to a **separate** NinjaOne MCP gateway. No cloud LLM API is required.
+A self-hosted, browser-based NinjaOne operations agent. It uses locally hosted models through Microsoft Foundry Local and launches the separate NinjaOne API Gateway MCP as a local STDIO subprocess. No cloud LLM API is required.
 
-## Current implementation
+## Design
+
+- **Foundry Local** provides the model. The agent discovers the active Foundry Local endpoint and loaded models.
+- **FastAPI** hosts the browser UI and chat/approval APIs on loopback by default.
+- **NinjaOne API Gateway MCP** provides schema-driven discovery and execution from the NinjaOne API v2 OpenAPI catalogue.
+- **Markdown skills** provide domain-specific operating procedures and are loaded progressively based on the user request.
+- **Backend approval signing** creates a short-lived HMAC token only after a human approves a specific POST/PUT/PATCH operation. The model never receives the approval secret or token.
+
+~~~text
+Browser
+  |
+  v
+FastAPI agent ---- Foundry Local (local model)
+  |
+  | one STDIO MCP session per agent turn
+  v
+NinjaOne API Gateway MCP
+  |
+  v
+NinjaOne Public API v2
+~~~
+
+## Current capabilities
 
 - Dynamic Foundry model discovery; no model ID is hard-coded.
-- Browser chat UI and FastAPI endpoints.
-- Dynamic MCP tool discovery through Streamable HTTP.
-- Model-driven tool selection with native OpenAI-style function calling where supported.
-- JSON tool-call fallback when the configured endpoint rejects native function-calling parameters.
-- Bounded multi-step tool execution and conversation history supplied by the browser.
-- Live results are passed back to the model; the agent is instructed not to invent NinjaOne facts.
-- Read-only operations can run automatically. Write operations require explicit approval by default.
-- Destructive operations are blocked by default.
-- Local-only bind address by default.
+- Native OpenAI-compatible tool calls, Qwen <tool_call> markup, and JSON tool-plan fallback.
+- Dynamic MCP tool discovery and bounded multi-step execution.
+- One MCP subprocess/session is reused across discovery, inspection, and execution in a single agent turn to avoid repeated process startup.
+- Master agent instructions plus focused domain skills with progressive disclosure.
+- Live results are returned to the model; the agent is instructed not to invent tenant facts.
+- GET operations can run automatically.
+- POST/PUT/PATCH operations require explicit approval and a backend-generated token bound to method, resolved path, and request-body hash.
+- DELETE is blocked by the gateway and is not enabled by this agent.
+- The agent supports the current schema-driven gateway tools and includes prompt guidance for the legacy endpoint-discovery tool names.
 
-> **Compatibility note:** Foundry's OpenAI-compatible API does not mean every model supports native tool calling equally. The fallback improves compatibility, but a model that cannot reliably follow tool schemas/JSON may still need a better model or a model-specific prompt. The agent validates tool names and argument object shape; the MCP server remains responsible for endpoint-level schema validation and authorization.
+## Skills
 
-## Architecture
+agents/ninjaone-expert.md contains the master operating policy. Domain skills live under skills/*/SKILL.md and use Agent Skills-style YAML frontmatter.
 
-```text
-Browser
-   |
-   v
-FastAPI agent (127.0.0.1:8080)
-   |                         |
-   v                         v
-Foundry Local            NinjaOne MCP gateway (MCP7)
-local model              separate process/repository
-                              |
-                              v
-                         NinjaOne API
-```
+Current skill areas:
 
-This repository contains the agent only. It does not copy, replace, or modify the MCP gateway. Configure the MCP endpoint in `.env`.
+- API discovery and schema inspection
+- Organizations, locations and groups
+- Devices and inventory
+- Users, technicians and assignments
+- Alerts, activities and tickets
+- Policies and configuration
+- Patch management
+- Automation and scripts
+- Device operations
+- Reports and compliance
+- Backup, IT asset management, knowledge and access
+
+The loader always includes API-discovery guidance and loads only the best matching domain skills for each request. It does not load every skill on every turn.
 
 ## Requirements
 
 - Windows 10/11 or another OS supported by Python.
 - Python 3.11 or newer (64-bit on Windows).
 - Microsoft Foundry Local running with at least one model loaded.
-- NinjaOne MCP gateway running and reachable through Streamable HTTP.
-- Network access from the agent host to the configured local services.
+- NinjaOne API Gateway MCP repository available locally.
+- A configured NinjaOne API client with the necessary tenant scopes.
+
+Expected sibling-folder layout:
+
+~~~text
+C:\project\
+  NinjaOne-Local-AI-Agent\
+  NinjaRMM-API-Gateway-MCP\
+~~~
 
 ## Windows PowerShell installation
 
-Run from the repository root:
+Run from C:\project\NinjaOne-Local-AI-Agent:
 
-```powershell
-py -3.11 -m venv .venv
-.\.venv\Scripts\Activate.ps1
-python -m pip install --upgrade pip
-pip install -r requirements.txt
-Copy-Item .env.example .env
-notepad .env
-```
-
-If PowerShell blocks activation, use the venv interpreter directly instead:
-
-```powershell
+~~~powershell
 .\.venv\Scripts\python.exe -m pip install --upgrade pip
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
-```
+Copy-Item .env.example .env
+notepad .env
+~~~
 
-### Configure `.env`
+If the virtual environment does not exist yet:
 
-1. Set `FOUNDRY_BASE_URL` to the current OpenAI-compatible Foundry endpoint, including `/v1` if shown by Foundry. The port may change between sessions/model loads.
-2. Leave `FOUNDRY_MODEL` blank to select the first model returned by the endpoint, or set an exact ID shown by `/api/models`.
-3. Set `NINJAONE_MCP_URL` to the MCP7 Streamable HTTP URL. The example `http://127.0.0.1:8000/mcp` is only a placeholder; use the actual gateway URL and path.
-4. Keep `HOST=127.0.0.1` for local-only access. Do not expose the agent to the LAN until authentication and access controls have been added.
+~~~powershell
+C:\Program Files\Python312\python.exe -m venv .venv
+.\.venv\Scripts\python.exe -m pip install --upgrade pip
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+~~~
 
-Never copy NinjaOne credentials into this repository. Keep them in the MCP gateway's own local environment. Never commit `.env`, API tokens, device exports, tenant data, or logs.
+### Configure the agent
 
-### Start the agent
+The Foundry endpoint is discovered from the Foundry CLI. Set FOUNDRY_BASE_URL only if you need a custom/fallback endpoint. Leave FOUNDRY_MODEL blank to select the first loaded model or set an exact model ID returned by /api/models.
 
-```powershell
+Keep:
+
+~~~dotenv
+HOST=127.0.0.1
+PORT=8080
+APPROVAL_REQUIRED_FOR_WRITES=true
+ALLOW_DELETE_OPERATIONS=false
+~~~
+
+The gateway path defaults assume the two repositories are sibling folders under C:\project. If yours differ, uncomment the NINJAONE_GATEWAY_DIR, NINJAONE_GATEWAY_PYTHON, and NINJAONE_GATEWAY_ENV_FILE overrides in .env.example.
+
+### Configure the gateway
+
+Keep NinjaOne API credentials and NINJA_MCP_APPROVAL_SECRET only in:
+
+C:\project\NinjaRMM-API-Gateway-MCP\.env
+
+The approval secret must be the same secret configured for the gateway's HMAC verifier. The agent reads it from the gateway environment file only inside the trusted backend when an approval is accepted. Never put it in a prompt, model context, browser JavaScript, chat history, or Git.
+
+The gateway must have its own dependencies installed in its own virtual environment. The agent starts it with:
+
+~~~powershell
+C:\project\NinjaRMM-API-Gateway-MCP\.venv\Scripts\python.exe -m ninja_mcp
+~~~
+
+## Start
+
+From the agent repository root:
+
+~~~powershell
 $env:PYTHONPATH = "src"
 .\.venv\Scripts\python.exe -m ninjaone_agent.main
-```
+~~~
 
-Open **http://127.0.0.1:8080** in your browser. API documentation is at **http://127.0.0.1:8080/docs**.
+Open http://127.0.0.1:8080. API documentation is available at http://127.0.0.1:8080/docs.
 
-## Verify services
+## Verify
 
 In a second PowerShell window:
 
-```powershell
+~~~powershell
 Invoke-RestMethod http://127.0.0.1:8080/health
 Invoke-RestMethod http://127.0.0.1:8080/api/models
 Invoke-RestMethod http://127.0.0.1:8080/api/tools
-```
+~~~
 
-Send a basic agent request:
+Basic live-data test:
 
-```powershell
-$body = @{ message = "List the NinjaOne organizations and show their names." } | ConvertTo-Json -Depth 10
-Invoke-RestMethod -Uri http://127.0.0.1:8080/api/chat -Method Post -ContentType "application/json" -Body $body
-```
+~~~powershell
+$body = @{ message = "List all NinjaOne organizations and show their names and IDs." } | ConvertTo-Json -Depth 10
+$response = Invoke-RestMethod -Uri "http://127.0.0.1:8080/api/chat" -Method Post -ContentType "application/json" -Body $body
+$response | ConvertTo-Json -Depth 20
+~~~
+
+The response should include completed tool steps. If there are no tool steps, do not treat the answer as verified live tenant data.
+
+## Approval flow
+
+1. The model discovers and inspects the requested API endpoint.
+2. The backend verifies the HTTP method and resolves path parameters from the inspected OpenAPI path.
+3. GET requests execute automatically.
+4. POST/PUT/PATCH requests return a pending approval with the exact tool arguments and risk.
+5. After the user approves, the backend creates a short-lived HMAC token bound to the exact method, resolved path and canonical body hash.
+6. The token is passed to the gateway internally; it is never exposed to the model.
+7. The gateway validates the signature, expiry, operation binding and one-time token ID before execution.
+
+DELETE is not supported. If the approval secret is missing or the operation cannot be mapped safely, the agent blocks the write rather than bypassing the gateway.
 
 ## API
 
 | Method | Route | Purpose |
 |---|---|---|
-| GET | `/` | Browser chat UI |
-| GET | `/health` | Agent process health |
-| GET | `/api/models` | Dynamic Foundry model discovery |
-| GET | `/api/tools` | Dynamic MCP tool discovery |
-| POST | `/api/chat` | Agent request with optional model and history |
-| POST | `/api/approvals/{approval_id}` | Approve or reject a pending write operation |
-
-## Safety behavior
-
-- MCP tools marked read-only by server annotations may run automatically.
-- Dynamic gateway calls that specify HTTP `GET` are treated as read-only; `POST`, `PUT`, and `PATCH` require approval.
-- Unknown tools default to requiring approval unless their names clearly indicate a read operation.
-- Delete-like operations and HTTP `DELETE` are blocked unless `ALLOW_DELETE_OPERATIONS=true`. Enabling this setting is not recommended for initial testing.
-- Approval requests are held in process memory and are lost if the agent restarts.
-- The MCP gateway and NinjaOne API must still enforce their own credentials, permissions, and endpoint-level authorization.
-
-This is a local development/demo baseline, not a hardened multi-user production service. It currently has no user authentication, durable approval store, role-based access control, or persistent server-side conversation database. Do not bind it to `0.0.0.0` or expose it to untrusted networks.
+| GET | / | Browser chat UI |
+| GET | /health | Agent process health |
+| GET | /api/models | Dynamic Foundry model discovery |
+| GET | /api/tools | Dynamic MCP tool discovery |
+| POST | /api/chat | Agent request with optional model and history |
+| POST | /api/approvals/{approval_id} | Approve or reject a pending write |
 
 ## Tests
 
-```powershell
+From the repository root:
+
+~~~powershell
 $env:PYTHONPATH = "src"
-.\.venv\Scripts\python.exe -m pytest -q
-```
+.\.venv\Scripts\python.exe -m pytest -v
+~~~
 
-Tests cover API health, tool mapping, JSON fallback parsing, and safety classification. They do not require Foundry or a live NinjaOne tenant.
+The tests are local and do not require Foundry or a live NinjaOne tenant. They cover tool-call parsing, argument validation, skill selection, operation-risk classification, approval-token construction, and MCP session reuse. Live integration must still be checked against your Foundry runtime, gateway environment, NinjaOne API permissions, and a controlled tenant.
 
-## Troubleshooting
+## Security limitations
 
-- **Foundry connection refused:** confirm a model is loaded and update `FOUNDRY_BASE_URL` to the current endpoint.
-- **No models returned:** check the endpoint path and verify Foundry's OpenAI-compatible models route.
-- **MCP connection error:** verify the MCP7 process, URL, transport type (Streamable HTTP), and `/mcp` path.
-- **MCP tools list but calls fail:** inspect the gateway logs and confirm the gateway's NinjaOne credentials/scopes. This agent does not bypass gateway authorization.
-- **Model does not call tools:** try another loaded model. The JSON fallback is best-effort and does not guarantee tool-use quality across every model.
+This remains a local development/demo service, not a hardened multi-user production deployment. It has no user authentication, durable approval store, role-based authorization layer, or persistent server-side conversation database. Pending approvals are held in memory and expire when the agent restarts.
 
-## Roadmap
+Keep HOST=127.0.0.1. Do not expose the service to the LAN or bind to 0.0.0.0 until authentication, CSRF protection, user/role authorization, durable audit logging, and persistent approval handling have been implemented and reviewed.
 
-- Model-by-model compatibility and evaluation harness.
-- Better pagination and multi-step planning for gateway-specific tool patterns.
-- Durable conversation state and audit events with secret/data redaction.
-- Optional model-specific fine-tuning after collecting reviewed, synthetic or sanitized examples.
-- LAN deployment only after authentication, authorization, and secure secret handling are implemented.
+## Performance notes
 
-## Contributing
+The per-turn MCP session reuse removes repeated gateway Python process startup between tool calls. Progressive skill loading limits domain instructions to the most relevant skills. Neither change guarantees a particular model latency: Foundry model generation, thinking-token count, context length, number of tool rounds, and NinjaOne API latency still affect total response time.
 
-Use synthetic examples. Redact organization names, device identifiers, user details, tokens, tenant data, and other sensitive information from issues and pull requests.
+## Reference
+
+The Markdown skill layout and progressive-disclosure pattern are adapted from https://github.com/wshobson/agents. Its Claude/Codex/Cursor/OpenCode adapters and optional external LLM evaluation are not dependencies of this project.
