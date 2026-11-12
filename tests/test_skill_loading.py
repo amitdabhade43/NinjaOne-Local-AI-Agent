@@ -18,3 +18,11 @@ def test_skill_context_is_bounded_and_contains_only_selected_skills():
     context = render_skill_context("reboot a device service")
     assert "ninjaone-api-discovery" in context
     assert len(context) <= 16000
+
+
+def test_master_agent_instructions_are_loaded():
+    from ninjaone_agent.skills import render_master_instructions
+
+    instructions = render_master_instructions()
+    assert "Never invent tenant data" in instructions
+    assert "DELETE is prohibited" in instructions
