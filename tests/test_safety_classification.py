@@ -32,3 +32,18 @@ def test_write_requires_approval_and_delete_is_blocked():
     tool = {"name": "execute_endpoint", "description": "Execute endpoint"}
     assert approval_decision(tool, False, {"http_method": "PATCH"}) == (False, "approval_required")
     assert approval_decision(tool, False, {"http_method": "DELETE"}) == (False, "blocked")
+
+
+def test_legacy_endpoint_tools_are_classified_by_http_method():
+    call_tool = {"name": "call", "description": "Execute a NinjaOne endpoint"}
+    assert classify_tool(call_tool, {"http_method": "GET"}) == "read"
+    assert classify_tool(call_tool, {"http_method": "POST"}) == "write"
+    raw_tool = {"name": "raw_call", "description": "Execute a raw API request"}
+    assert classify_tool(raw_tool, {"http_method": "GET"}) == "read"
+    assert classify_tool(raw_tool, {"http_method": "PATCH"}) == "write"
+
+
+def test_local_memory_tool_risk():
+    assert classify_tool({"name": "memory_list", "description": "List saved memory"}) == "read"
+    assert classify_tool({"name": "memory_save", "description": "Save memory"}) == "write"
+    assert classify_tool({"name": "memory_delete", "description": "Delete memory"}) == "destructive"
