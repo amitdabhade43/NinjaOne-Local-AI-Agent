@@ -104,3 +104,68 @@ def test_people_name_search_strips_ninjaone_scope_suffix():
     assert _people_name_search_intent(
         "Find all users with name Rene Piuk"
     ) == "Rene Piuk"
+
+
+def test_device_access_intent_extracts_named_person():
+    from ninjaone_agent.agent import _device_access_name_intent
+
+    assert _device_access_name_intent(
+        "how many device access has Richard Otrebski in ninjaone"
+    ) == "Richard Otrebski"
+    assert _device_access_name_intent(
+        "How many devices can Richard Otrebski access?"
+    ) == "Richard Otrebski"
+    assert _device_access_name_intent("How many devices are in NinjaOne?") is None
+
+
+def test_device_access_fast_path_uses_catalogue_and_counts_accessible_ids():
+    import asyncio
+
+    class FakeCatalog:
+        def get(self, path, method="GET"):
+            assert path == "/v2/user/end-users"
+            assert method == "GET"
+            return {"path": path, "response_fields": [
+                {"name": "accessibleDeviceIds", "type": "array"}
+            ]}
+
+    class FakeGateway:
+        def __init__(self):
+            self.calls = []
+
+        async def call_tool(self, name, arguments):
+            self.calls.append((name, arguments))
+            return {"structured_content": [
+                {
+                    "id": 17, "firstName": "Richard", "lastName": "Otrebski",
+                    "email": "richard@example.com",
+                    "accessibleDeviceIds": [101, 102, 103],
+                    "assignedDeviceIds": [101, 102],
+                }
+            ]}
+
+    agent = NinjaOneAgent.__new__(NinjaOneAgent)
+    agent.api_catalog = FakeCatalog()
+    agent.gateway = FakeGateway()
+    tool = {
+        "name": "call",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "endpoint": {"type": "string"},
+                "path_params": {"type": "object"},
+                "query": {"type": "object"},
+                "body": {"type": ["object", "null"]},
+            },
+            "required": ["endpoint"],
+        },
+    }
+
+    result = asyncio.run(agent._run_person_device_access(
+        "Richard Otrebski", {"call": tool}, "test-model"
+    ))
+
+    assert "can access **3 device(s)**" in result["answer"]
+    assert "Assigned devices: **2**" in result["answer"]
+    assert len(agent.gateway.calls) == 1
+    assert agent.gateway.calls[0][0] == "call"
