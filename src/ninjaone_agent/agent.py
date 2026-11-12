@@ -146,7 +146,10 @@ def _likely_live_request(message: str) -> bool:
         "check in", "check-in", "last seen", "inventory", "asset", "software",
         "hardware", "disk", "storage", "memory", "cpu", "compliance", "antivirus",
         "backup", "report", "job", "task", "remediation", "fix", "repair",
-        "assign", "how many", "show me", "find all", "fleet",
+        "assign", "how many", "show me", "find all", "fleet", "attention", "unhealthy",
+        "health", "at risk", "at-risk", "noncompliant", "non-compliant", "not compliant",
+        "issue", "issues", "problem", "problems", "failing", "failed", "failure",
+        "down", "not working", "broken", "trouble", "troubleshoot", "what is wrong",
     )
     return any(term in text for term in indicators)
 
