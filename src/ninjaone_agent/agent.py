@@ -183,22 +183,22 @@ def _tool_failed(result: dict[str, Any]) -> bool:
 
 def _direct_inventory_intent(message: str) -> dict[str, str] | None:
     """Recognize clear inventory list/count requests, including common fuzzy wording."""
-    text = re.sub(r"\\s+", " ", (message or "").casefold()).strip()
+    text = re.sub(r"\s+", " ", (message or "").casefold()).strip()
     if not text:
         return None
 
     # Filtered, investigative, or state-dependent requests must use the full agent.
     filter_terms = (
-        r"\\b(where|whose|matching|details?|status|named|called|offline|online|inactive|"
+        r"\b(where|whose|matching|details?|status|named|called|offline|online|inactive|"
         r"active|stale|unhealthy|not reporting|not communicating|last seen|last check.?in|"
-        r"older than|newer than|with|without|in|for|under|since|before|after)\\b"
+        r"older than|newer than|with|without|in|for|under|since|before|after)\b"
     )
     if re.search(filter_terms, text):
         return None
 
-    count = bool(re.search(r"\\b(count|total|how many|number of)\\b", text))
+    count = bool(re.search(r"\b(count|total|how many|number of)\b", text))
     list_intent = bool(re.search(
-        r"\\b(list|show|display|get|fetch|retrieve|pull|find|give me|what|which)\\b", text
+        r"\b(list|show|display|get|fetch|retrieve|pull|find|give me|what|which)\b", text
     ))
 
     aliases = {
@@ -225,7 +225,7 @@ def _direct_inventory_intent(message: str) -> dict[str, str] | None:
     if not (count or list_intent):
         # Accept short noun phrases such as "all machines" or "PC inventory".
         if not re.fullmatch(
-            r"(?:please\\s+)?(?:all\\s+)?[a-z0-9\\s-]+(?:[?.!]*)", text
+            r"(?:please\s+)?(?:all\s+)?[a-z0-9\s-]+(?:[?.!]*)", text
         ):
             return None
         if not any(word in text for word in ("all", "inventory", "names", "list", "count")):
