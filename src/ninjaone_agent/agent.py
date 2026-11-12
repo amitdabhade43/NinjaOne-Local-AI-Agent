@@ -269,7 +269,8 @@ def _format_people_directory(records: list[dict[str, Any]], name: str) -> str:
         )
         email = record.get("email") or "Email not available"
         lines.append(f"- **{account_name}** — {email}")
-    return "\\n".join(lines)
+    return "\n".join(lines)
+
 
 def _record_matches_person_name(record: dict[str, Any], query: str) -> bool:
     """Match a name against common NinjaOne person fields without guessing identity."""
