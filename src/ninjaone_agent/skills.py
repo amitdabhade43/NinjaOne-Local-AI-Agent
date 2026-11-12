@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import re
+from difflib import get_close_matches
 from pathlib import Path
 
 DEFAULT_REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -10,6 +11,10 @@ DEFAULT_AGENT_FILE = DEFAULT_REPO_ROOT / "agents" / "ninjaone-expert.md"
 ALWAYS_LOAD = {"ninjaone-api-discovery"}
 SYNONYMS = {
     "machine": {"device", "devices"},
+    "pc": {"device", "devices"},
+    "pcs": {"device", "devices"},
+    "desktop": {"device", "devices"},
+    "desktops": {"device", "devices"},
     "machines": {"device", "devices"},
     "computer": {"device", "devices"},
     "computers": {"device", "devices"},
@@ -21,6 +26,11 @@ SYNONYMS = {
     "servers": {"device", "devices"},
     "offline": {"device", "devices", "status", "checkin"},
     "stale": {"device", "devices", "checkin"},
+    "reporting": {"device", "devices", "checkin", "status"},
+    "reported": {"device", "devices", "checkin", "status"},
+    "unreachable": {"device", "devices", "offline", "status"},
+    "unresponsive": {"device", "devices", "offline", "status"},
+    "disconnected": {"device", "devices", "offline", "status"},
     "org": {"organization", "organizations"},
     "orgs": {"organization", "organizations"},
     "customer": {"organization", "organizations"},
@@ -40,6 +50,7 @@ SYNONYMS = {
     "updates": {"patch", "patches"},
     "hotfix": {"patch", "patches"},
     "employee": {"user", "users"},
+    "staff": {"user", "users", "technician", "technicians"},
     "employees": {"user", "users"},
     "unhealthy": {"device", "devices", "health", "alerts"},
     "attention": {"alerts", "issues", "health", "devices"},
@@ -63,6 +74,12 @@ def _tokens(value: str) -> set[str]:
     expanded = set(tokens)
     for token in tokens:
         expanded.update(SYNONYMS.get(token, set()))
+        # Correct only high-confidence misspellings of known domain vocabulary.
+        if len(token) >= 5:
+            near = get_close_matches(token, SYNONYMS.keys(), n=1, cutoff=0.88)
+            if near:
+                expanded.update(SYNONYMS.get(near[0], set()))
+                expanded.add(near[0])
     return expanded
 
 
