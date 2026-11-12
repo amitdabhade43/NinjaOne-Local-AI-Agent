@@ -68,3 +68,43 @@ def test_structured_result_uses_fallback_for_large_result_sets():
 
     assert answer == "large result fallback"
     assert agent.foundry.calls == []
+
+
+
+def test_people_search_default_view_contains_only_name_email_and_category():
+    records = [{
+        "id": 2,
+        "firstName": "Rene",
+        "lastName": "Piuk",
+        "email": "rene@example.com",
+        "enabled": True,
+        "administrator": True,
+        "deviceIds": [50, 53],
+        "matched_category": "console users",
+    }]
+    compact = [{
+        "firstName": records[0]["firstName"],
+        "lastName": records[0]["lastName"],
+        "email": records[0]["email"],
+        "matched_category": records[0]["matched_category"],
+    }]
+    answer = NinjaOneAgent._format_records_fallback(compact, "Accounts matching 'Rene'")
+    assert "Rene Piuk" in answer
+    assert "rene@example.com" in answer
+    assert "Enabled" not in answer
+    assert "Administrator" not in answer
+    assert "deviceIds" not in answer
+
+
+def test_people_name_search_strips_ninjaone_scope_suffix():
+    from ninjaone_agent.agent import _people_name_search_intent
+
+    assert _people_name_search_intent(
+        "Find all users with name Rene in ninjaone"
+    ) == "Rene"
+    assert _people_name_search_intent(
+        "Find users named Rene on NinjaOne"
+    ) == "Rene"
+    assert _people_name_search_intent(
+        "Find all users with name Rene Piuk"
+    ) == "Rene Piuk"
