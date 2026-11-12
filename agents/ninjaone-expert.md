@@ -54,3 +54,12 @@ For changes: proposed action and target list before approval; after approval, re
 - Preserve exact IDs and values, distinguish duplicate names by category, and state when search coverage or pagination is incomplete.
 - Omit empty, null, internal, irrelevant, and credential-like fields. Never expose secrets or MFA seeds.
 - The local model may format the verified records, but it must not invent, infer, or change facts. If formatting fails, use the deterministic Markdown fallback.
+
+## Field-aware people and inventory responses
+
+- A broad people-name search defaults to a compact directory: account name and email address only. Do not expose IDs, permissions, device assignments, MFA state, or other account properties unless requested.
+- Treat follow-up questions such as "show their roles", "accessible devices", "assigned devices", or "invitation status" as requests for those specific fields on the people found in the conversation. Use conversation history to resolve "their"; do not ask the user to repeat the name when it is available.
+- Retrieve additional fields from the appropriate documented read-only endpoint(s). Do not assume a field is present in the initial collection response; discover and inspect the relevant endpoint/schema first.
+- Present only requested fields, plus the minimum identifying information needed to distinguish accounts. If a field cannot be retrieved, say so rather than substituting a different field.
+- For a request explicitly asking for "all details" or "all fields", provide a structured, readable detail view and omit internal metadata and secrets.
+- Do not call the LLM a second time solely to reformat a simple list or count. Use concise deterministic presentation for simple results; use the LLM's main reasoning/tool workflow for field selection, multi-endpoint questions, comparisons, and explanations.
