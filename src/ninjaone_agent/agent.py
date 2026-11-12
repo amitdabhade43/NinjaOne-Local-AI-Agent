@@ -211,7 +211,7 @@ class NinjaOneAgent:
         stack = AsyncExitStack()
         try:
             await stack.enter_async_context(self.gateway.connection())
-        except MCPGatewayError as exc:
+        except Exception as exc:
             await stack.aclose()
             # Preserve general local-model chat when the gateway cannot start.
             logger.warning("NinjaOne MCP gateway unavailable for this turn: %s", exc)
