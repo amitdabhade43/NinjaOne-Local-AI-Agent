@@ -283,7 +283,6 @@ def _endpoint_candidate(
             candidate = dict(item)
             candidate.setdefault("method", method)
             candidate.setdefault("path", path)
-            candidate.setdefault("endpoint", f"GET {path}")
             searchable = " ".join(str(candidate.get(key) or "")
                                   for key in ("path", "endpoint", "summary", "description")).casefold()
             score = 0
