@@ -179,6 +179,99 @@ def _tool_failed(result: dict[str, Any]) -> bool:
     return bool(payload.get("error")) or payload.get("executed") is False
 
 
+def _direct_inventory_intent(message: str) -> dict[str, str] | None:
+    """Recognize simple, unfiltered inventory list/count requests without an LLM round-trip."""
+    text = re.sub(r"\\s+", " ", (message or "").casefold()).strip()
+    if not text or re.search(r"\\b(where|whose|matching|search|details?|status|named|called|older than|newer than)\\b", text):
+        return None
+    count = bool(re.search(r"\\b(count|total|how many|number of)\\b", text))
+    list_intent = bool(re.search(r"\\b(list|show|display|get|fetch|all|give me|what are|which are)\\b", text))
+    implicit = bool(re.search(r"\\b(organizations?|orgs?|technicians?|devices?|endpoints?|users?|locations?|sites?|groups?)\\b", text))
+    if not (count or list_intent or implicit):
+        return None
+    targets = (
+        ("organizations", r"\\b(organizations?|orgs?|customers?)\\b"),
+        ("technicians", r"\\b(technicians?)\\b"),
+        ("devices", r"\\b(devices?|endpoints?|laptops?|servers?|workstations?)\\b"),
+        ("users", r"\\b(users?|employees?)\\b"),
+        ("locations", r"\\b(locations?|sites?)\\b"),
+        ("groups", r"\\b(groups?)\\b"),
+    )
+    for name, pattern in targets:
+        if re.search(pattern, text):
+            return {"resource": name, "operation": "count" if count else "list"}
+    return None
+
+
+def _walk_json(value: Any):
+    """Yield nested dictionaries/lists from parsed MCP output."""
+    if isinstance(value, dict):
+        yield value
+        for child in value.values():
+            yield from _walk_json(child)
+    elif isinstance(value, list):
+        for child in value:
+            yield from _walk_json(child)
+
+
+def _tool_payloads(result: dict[str, Any]) -> list[Any]:
+    values: list[Any] = []
+    structured = result.get("structured_content")
+    if structured is not None:
+        values.append(structured)
+    for item in result.get("content") or []:
+        if isinstance(item, str):
+            try:
+                values.append(json.loads(item))
+            except json.JSONDecodeError:
+                continue
+    return values
+
+
+def _endpoint_candidate(result: dict[str, Any]) -> dict[str, Any] | None:
+    """Find a documented GET endpoint in endpoint-discovery output."""
+    for payload in _tool_payloads(result):
+        for item in _walk_json(payload):
+            method = str(item.get("method") or item.get("http_method") or "").upper()
+            path = item.get("path") or item.get("endpoint_path")
+            if method == "GET" and isinstance(path, str) and path.startswith("/"):
+                return item
+            endpoint = item.get("endpoint")
+            if isinstance(endpoint, str):
+                match = re.match(r"^GET\\s+(/\\S+)", endpoint.strip(), re.IGNORECASE)
+                if match:
+                    return {"method": "GET", "path": match.group(1), "endpoint": endpoint}
+    return None
+
+
+def _inventory_records(result: dict[str, Any]) -> list[dict[str, Any]]:
+    """Extract records from common NinjaOne collection response envelopes."""
+    wrappers = ("items", "data", "results", "records", "organizations", "devices",
+                "technicians", "users", "locations", "groups")
+    for payload in _tool_payloads(result):
+        for item in _walk_json(payload):
+            for key in wrappers:
+                value = item.get(key)
+                if isinstance(value, list):
+                    return [record for record in value if isinstance(record, dict)]
+            if isinstance(payload, list):
+                return [record for record in payload if isinstance(record, dict)]
+    return []
+
+
+def _tool_arguments(tool: dict[str, Any], preferred: dict[str, Any]) -> dict[str, Any] | None:
+    """Build only arguments accepted by the currently connected gateway schema."""
+    schema = tool.get("input_schema") or {}
+    properties = schema.get("properties") or {}
+    required = schema.get("required") or []
+    arguments = {key: value for key, value in preferred.items() if key in properties}
+    if any(key not in arguments for key in required):
+        return None
+    if _validate_tool_arguments(schema, arguments):
+        return None
+    return arguments
+
+
 class NinjaOneAgent:
     def __init__(self, settings: Settings):
         self.settings = settings
@@ -250,6 +343,74 @@ class NinjaOneAgent:
         async with stack:
             return await self._run_connected(message, model, history)
 
+
+    async def _run_direct_inventory(
+        self, intent: dict[str, str], by_name: dict[str, dict[str, Any]]
+    ) -> dict[str, Any] | None:
+        """Run a common read-only inventory request without model planning/finalization."""
+        resource = intent["resource"]
+        steps: list[dict[str, Any]] = []
+
+        discovery = by_name["find_endpoint"]
+        discovery_args = _tool_arguments(discovery, {"query": resource})
+        if discovery_args is None:
+            return None
+        found = await self.gateway.call_tool("find_endpoint", discovery_args)
+        steps.append({"tool": "find_endpoint", "status": "error" if _tool_failed(found) else "completed",
+                      "result": found})
+        if _tool_failed(found):
+            return {"answer": "NinjaOne endpoint discovery failed. No inventory data was retrieved.",
+                    "steps": steps, "pending_approvals": []}
+
+        candidate = _endpoint_candidate(found)
+        if not candidate:
+            # If the endpoint catalogue response is not in a recognized shape, let
+            # the general model/tool workflow interpret it rather than guessing.
+            return None
+        endpoint = candidate.get("endpoint") or f"{candidate['method']} {candidate['path']}"
+
+        describe = by_name["describe_endpoint"]
+        describe_args = _tool_arguments(describe, {"endpoint": endpoint})
+        if describe_args is None:
+            return None
+        inspected = await self.gateway.call_tool("describe_endpoint", describe_args)
+        steps.append({"tool": "describe_endpoint",
+                      "status": "error" if _tool_failed(inspected) else "completed",
+                      "result": inspected})
+        if _tool_failed(inspected):
+            return {"answer": "NinjaOne endpoint inspection failed. No inventory data was retrieved.",
+                    "steps": steps, "pending_approvals": []}
+
+        detail = _tool_result_object(inspected)
+        method = str(detail.get("method") or candidate.get("method") or "").upper()
+        path = detail.get("path") or candidate.get("path")
+        if method != "GET" or not isinstance(path, str) or not path.startswith("/"):
+            return None
+        # This fast path is deliberately GET-only; it cannot bypass approval policy.
+        endpoint_key = detail.get("endpoint") or candidate.get("endpoint") or f"GET {path}"
+        call_tool = by_name["call"]
+        call_args = _tool_arguments(call_tool, {
+            "endpoint": endpoint_key, "path_params": {}, "query": {}, "body": None
+        })
+        if call_args is None:
+            return None
+        result = await self.gateway.call_tool("call", call_args)
+        steps.append({"tool": "call", "status": "error" if _tool_failed(result) else "completed",
+                      "result": result})
+        if _tool_failed(result):
+            return {"answer": f"NinjaOne returned an error while retrieving {resource}.",
+                    "steps": steps, "pending_approvals": []}
+
+        records = _inventory_records(result)
+        if intent["operation"] == "count":
+            answer = f"NinjaOne returned {len(records)} {resource} record(s)."
+        elif records:
+            answer = "\\n".join(json.dumps(row, ensure_ascii=False, default=str) for row in records)
+        else:
+            # Preserve the exact API payload when its collection envelope is unfamiliar.
+            answer = json.dumps(_tool_payloads(result), ensure_ascii=False, indent=2, default=str)
+        return {"answer": answer, "steps": steps, "pending_approvals": []}
+
     async def _run_connected(self, message: str, model: str | None = None,
                              history: list[dict[str, str]] | None = None) -> dict[str, Any]:
         selected = self.foundry.resolve_model(model)
@@ -299,6 +460,15 @@ class NinjaOneAgent:
                 "steps": [],
                 "pending_approvals": [],
             }
+
+        # Fast path: simple inventory lists/counts use endpoint discovery + one GET
+        # directly. Complex, filtered, and all write requests stay on the full agent path.
+        direct_intent = _direct_inventory_intent(message)
+        if direct_intent and {"find_endpoint", "describe_endpoint", "call"}.issubset(tool_names):
+            direct_result = await self._run_direct_inventory(direct_intent, by_name)
+            if direct_result is not None:
+                direct_result["model"] = selected
+                return direct_result
         skill_query = (prior_context + " " + message).strip()
         skill_context = render_skill_context(skill_query)
         if skill_context:
