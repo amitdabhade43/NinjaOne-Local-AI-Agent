@@ -155,7 +155,6 @@ def test_device_access_fast_path_uses_catalogue_and_counts_accessible_ids():
                 "endpoint": {"type": "string"},
                 "path_params": {"type": "object"},
                 "query": {"type": "object"},
-                "body": {"type": ["object", "null"]},
             },
             "required": ["endpoint"],
         },
