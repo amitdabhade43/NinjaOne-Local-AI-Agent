@@ -8,7 +8,8 @@ from ninjaone_agent.config import Settings
 from ninjaone_agent.foundry import FoundryClient, FoundryUnavailable
 from ninjaone_agent.mcp_gateway import NinjaOneMCPGateway
 from ninjaone_agent.safety import approval_decision, classify_tool
-from ninjaone_agent.skills import render_skill_context\nfrom ninjaone_agent.approval import (
+from ninjaone_agent.skills import render_skill_context
+from ninjaone_agent.approval import (
     ApprovalSigningError,
     mint_approval_token,
     resolve_path,
@@ -238,7 +239,7 @@ class NinjaOneAgent:
             )
         skill_context = render_skill_context(message)
         if skill_context:
-            system_text += "\\n\\n" + skill_context
+            system_text += "\n\n" + skill_context
         messages: list[dict[str, Any]] = [{"role": "system", "content": system_text}]
         for item in (history or [])[-8:]:
             if item.get("role") in ("user", "assistant") and item.get("content"):
