@@ -1,7 +1,7 @@
+from pathlib import Path
+
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse
-from fastapi.staticfiles import StaticFiles
-from pathlib import Path
 from pydantic import BaseModel, Field
 
 from ninjaone_agent.agent import NinjaOneAgent
@@ -38,8 +38,9 @@ def health() -> dict[str, str]:
 @app.get("/api/models")
 def models() -> dict[str, object]:
     try:
-        found = FoundryClient(get_settings()).list_models()
-        return {"models": found, "count": len(found)}
+        foundry = FoundryClient(get_settings())
+        found = foundry.list_models()
+        return {"models": found, "count": len(found), "endpoint": foundry.endpoint}
     except FoundryUnavailable as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 

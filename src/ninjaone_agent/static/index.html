@@ -21,10 +21,10 @@ form{display:flex;gap:10px}textarea{flex:1;resize:vertical;min-height:58px}butto
 </style>
 </head>
 <body>
-<header><div><h1>NinjaOne Local AI Agent</h1><div class="sub">Local Foundry model · NinjaOne MCP gateway</div></div><div id="status">Connecting…</div></header>
+<header><div><h1>NinjaOne Local AI Agent</h1><div class="sub">Local Foundry model · NinjaOne MCP gateway</div></div><div id="status">Discovering Foundry…</div></header>
 <main>
-<div class="toolbar"><label for="model">Model</label><select id="model"><option value="">Loading models…</option></select><button id="refresh" type="button">Refresh</button></div>
-<div id="chat"><div class="msg assistant">Hello. Ask a question about your NinjaOne environment. Live data is retrieved through the configured MCP gateway.</div></div>
+<div class="toolbar"><label for="model">Model</label><select id="model"><option value="">Discovering models…</option></select><button id="refresh" type="button">Refresh</button></div>
+<div id="chat"><div class="msg assistant">Hello. Ask a question about your NinjaOne environment. Live data is retrieved through the local MCP gateway.</div></div>
 <form id="form"><textarea id="message" placeholder="Ask about organizations, devices, users, alerts…" required></textarea><button id="send">Send</button></form>
 <div class="small">Read operations run automatically. Write operations pause for approval. Destructive operations are blocked by default.</div>
 </main>
@@ -33,11 +33,17 @@ const chat=document.querySelector('#chat'), modelSelect=document.querySelector('
 const history=[];
 function add(role,text){const el=document.createElement('div');el.className='msg '+role;el.textContent=text;chat.appendChild(el);chat.scrollTop=chat.scrollHeight;return el}
 async function load(){
+ statusEl.textContent='Discovering Foundry endpoint…';
  try{
-  const [m,t]=await Promise.all([fetch('/api/models').then(r=>r.json()),fetch('/api/tools').then(r=>r.json())]);
-  modelSelect.innerHTML='';(m.models||[]).forEach(x=>{const o=document.createElement('option');o.value=x.id;o.textContent=x.id;modelSelect.appendChild(o)});
-  statusEl.textContent='Ready · '+(t.count??0)+' MCP tools';
- }catch(e){statusEl.textContent='Connection issue · check Foundry/MCP';}
+  const [mr,tr]=await Promise.all([fetch('/api/models'),fetch('/api/tools')]);
+  const [m,t]=await Promise.all([mr.json(),tr.json()]);
+  if(!mr.ok)throw new Error(m.detail||'Foundry model discovery failed');
+  if(!tr.ok)throw new Error(t.detail||'NinjaOne MCP gateway is unavailable');
+  modelSelect.innerHTML='';
+  (m.models||[]).forEach(x=>{const o=document.createElement('option');o.value=x.id;o.textContent=x.id;modelSelect.appendChild(o)});
+  if(!m.models||!m.models.length){const o=document.createElement('option');o.value='';o.textContent='No loaded Foundry models';modelSelect.appendChild(o)}
+  statusEl.textContent='Ready · '+(t.count??0)+' MCP tools · '+(m.endpoint||'Foundry connected');
+ }catch(e){statusEl.textContent='Connection issue · '+e.message;modelSelect.innerHTML='<option value="">Foundry unavailable</option>';}
 }
 async function send(){
  const input=document.querySelector('#message'), button=document.querySelector('#send'), text=input.value.trim();if(!text)return;
@@ -70,4 +76,5 @@ function showApproval(p){
 document.querySelector('#form').addEventListener('submit',e=>{e.preventDefault();send()});
 document.querySelector('#refresh').addEventListener('click',load);load();
 </script>
-</body></html>
+</body>
+</html>
