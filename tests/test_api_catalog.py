@@ -76,3 +76,11 @@ def test_missing_catalog_falls_back_to_mcp_discovery(tmp_path):
     catalog = NinjaOneAPICatalog(tmp_path / "missing.json")
     assert catalog.loaded is False
     assert catalog.search("users") == []
+
+
+def test_catalog_exact_lookup_returns_only_requested_method(tmp_path):
+    path = tmp_path / "catalog.json"
+    path.write_text(json.dumps(build_catalog(sample_spec())), encoding="utf-8")
+    catalog = NinjaOneAPICatalog(path)
+    assert catalog.get("/v2/users", "GET")["operation_id"] == "getUsers"
+    assert catalog.get("/v2/users", "PATCH") is None
