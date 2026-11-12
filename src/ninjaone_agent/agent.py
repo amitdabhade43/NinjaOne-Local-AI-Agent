@@ -191,15 +191,18 @@ def _direct_inventory_intent(message: str) -> dict[str, str] | None:
     filter_terms = (
         r"\b(where|whose|matching|details?|status|named|called|offline|online|inactive|"
         r"active|stale|unhealthy|not reporting|not communicating|last seen|last check.?in|"
-        r"older than|newer than|with|without|in|for|under|since|before|after)\b"
+        r"older than|newer than|with|without|in|for|under|since|before|after|by|serial|asset tag)\b"
     )
     if re.search(filter_terms, text):
         return None
 
     count = bool(re.search(r"\b(count|total|how many|number of)\b", text))
     list_intent = bool(re.search(
-        r"\b(list|show|display|get|fetch|retrieve|pull|find|give me|what|which)\b", text
+        r"\b(list|show|display|get|fetch|retrieve|pull|give me)\b", text
     ))
+    list_intent = list_intent or bool(re.search(r"\bfind\s+all\b", text))
+    list_intent = list_intent or bool(re.search(r"\bwhat\s+(?:are|is|do|does)\b", text))
+    list_intent = list_intent or bool(re.search(r"\bwhich\s+(?:all\s+)?[a-z0-9-]+", text))
 
     aliases = {
         "organizations": ("organization", "organizations", "org", "orgs", "customer", "customers"),
@@ -258,20 +261,42 @@ def _tool_payloads(result: dict[str, Any]) -> list[Any]:
     return values
 
 
-def _endpoint_candidate(result: dict[str, Any]) -> dict[str, Any] | None:
-    """Find a documented GET endpoint in endpoint-discovery output."""
+def _endpoint_candidate(
+    result: dict[str, Any], resource: str | None = None
+) -> dict[str, Any] | None:
+    """Select the best documented GET endpoint for a resource from discovery results."""
+    candidates: list[tuple[int, dict[str, Any]]] = []
+    resource_term = (resource or "").casefold().rstrip("s")
     for payload in _tool_payloads(result):
         for item in _walk_json(payload):
             method = str(item.get("method") or item.get("http_method") or "").upper()
             path = item.get("path") or item.get("endpoint_path")
-            if method == "GET" and isinstance(path, str) and path.startswith("/"):
-                return item
             endpoint = item.get("endpoint")
-            if isinstance(endpoint, str):
-                match = re.match(r"^GET\s+(/\S+)", endpoint.strip(), re.IGNORECASE)
-                if match:
-                    return {"method": "GET", "path": match.group(1), "endpoint": endpoint}
-    return None
+            if not (method == "GET" and isinstance(path, str) and path.startswith("/")):
+                if isinstance(endpoint, str):
+                    match = re.match(r"^GET\s+(/\S+)", endpoint.strip(), re.IGNORECASE)
+                    if not match:
+                        continue
+                    method, path = "GET", match.group(1)
+                else:
+                    continue
+            candidate = dict(item)
+            candidate.setdefault("method", method)
+            candidate.setdefault("path", path)
+            candidate.setdefault("endpoint", f"GET {path}")
+            searchable = " ".join(str(candidate.get(key) or "")
+                                  for key in ("path", "endpoint", "summary", "description")).casefold()
+            score = 0
+            if resource_term and resource_term in searchable:
+                score += 10
+            if resource and resource.casefold() in searchable:
+                score += 5
+            if resource_term and resource_term in str(candidate.get("path") or "").casefold():
+                score += 5
+            candidates.append((score, candidate))
+    if not candidates:
+        return None
+    return max(candidates, key=lambda item: item[0])[1]
 
 
 def _inventory_records(result: dict[str, Any]) -> list[dict[str, Any]]:
@@ -418,7 +443,7 @@ class NinjaOneAgent:
                 return {"answer": "NinjaOne endpoint discovery failed. No inventory data was retrieved.",
                         "steps": steps, "pending_approvals": []}
 
-            candidate = _endpoint_candidate(found)
+            candidate = _endpoint_candidate(found, resource)
             if not candidate:
                 return None
             endpoint = candidate.get("endpoint") or f"{candidate['method']} {candidate['path']}"
