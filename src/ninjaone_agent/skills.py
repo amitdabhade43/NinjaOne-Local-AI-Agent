@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import re
+import sqlite3
+import threading
 from difflib import get_close_matches
 from pathlib import Path
 
@@ -115,6 +117,72 @@ def _metadata(markdown: str) -> tuple[str, str]:
     )
 
 
+
+# A small in-process FTS5 index keeps skill retrieval local and avoids rebuilding
+# SQLite tables on every chat turn. The index is refreshed when any SKILL.md changes.
+_INDEX_LOCK = threading.RLock()
+_INDEX_CACHE: dict[str, tuple[tuple[tuple[str, int, int], ...], sqlite3.Connection]] = {}
+
+
+def _fts_skill_ranks(
+    query_tokens: set[str],
+    documents: list[tuple[Path, str, str, str]],
+) -> dict[str, int]:
+    """Return FTS5 relevance ranks (0 is best); gracefully fall back if FTS5 is absent."""
+    if not query_tokens or not documents:
+        return {}
+
+    paths = [path for path, _, _, _ in documents]
+    root_key = str(paths[0].parent.parent.resolve())
+    signature = tuple(
+        sorted(
+            (str(path.resolve()), path.stat().st_mtime_ns, path.stat().st_size)
+            for path in paths
+        )
+    )
+    # FTS query terms are quoted individually so punctuation cannot become syntax.
+    match_query = " OR ".join(
+        '"' + token.replace('"', '""') + '"'
+        for token in sorted(query_tokens)
+        if re.fullmatch(r"[a-z0-9_]+", token)
+    )
+    if not match_query:
+        return {}
+
+    with _INDEX_LOCK:
+        cached = _INDEX_CACHE.get(root_key)
+        if cached is None or cached[0] != signature:
+            connection = sqlite3.connect(":memory:", check_same_thread=False)
+            try:
+                connection.execute(
+                    "CREATE VIRTUAL TABLE skill_fts USING fts5("
+                    "name, description, body, tokenize='unicode61')"
+                )
+                connection.executemany(
+                    "INSERT INTO skill_fts(name, description, body) VALUES (?, ?, ?)",
+                    [(name, description, markdown) for _, name, description, markdown in documents],
+                )
+            except sqlite3.OperationalError:
+                connection.close()
+                return {}
+            if cached is not None:
+                cached[1].close()
+            _INDEX_CACHE[root_key] = (signature, connection)
+        else:
+            connection = cached[1]
+
+        try:
+            rows = connection.execute(
+                "SELECT name FROM skill_fts "
+                "WHERE skill_fts MATCH ? "
+                "ORDER BY bm25(skill_fts, 8.0, 4.0, 1.0), name",
+                (match_query,),
+            ).fetchall()
+        except sqlite3.OperationalError:
+            return {}
+
+    return {row[0]: rank for rank, row in enumerate(rows)}
+
 def load_relevant_skills(
     query: str,
     skills_dir: Path | str | None = None,
@@ -128,18 +196,26 @@ def load_relevant_skills(
         return []
 
     query_tokens = _tokens(query)
-    ranked: list[tuple[int, str, str, str]] = []
+    documents: list[tuple[Path, str, str, str]] = []
     for path in sorted(root.glob("*/SKILL.md")):
         try:
             markdown = path.read_text(encoding="utf-8")
         except OSError:
             continue
         name, description = _metadata(markdown)
-        if not name or not description:
-            continue
+        if name and description:
+            documents.append((path, name, description, markdown))
+
+    fts_ranks = _fts_skill_ranks(query_tokens, documents)
+    ranked: list[tuple[int, str, str, str]] = []
+    for _, name, description, markdown in documents:
         searchable = _tokens(f"{name.replace('-', ' ')} {description}")
         overlap = len(query_tokens & searchable)
         score = overlap * 3
+        # FTS5 also searches the full skill body, helping queries whose wording
+        # appears in operational guidance rather than the frontmatter summary.
+        if name in fts_ranks:
+            score += max(1, 12 - (fts_ranks[name] * 2))
         # Give the matching operational domain a clear ranking advantage.
         # Generic mentions of "device" inside other skills should not outrank
         # the dedicated inventory skill for machine/check-in questions.
