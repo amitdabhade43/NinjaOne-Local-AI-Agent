@@ -1,0 +1,27 @@
+from ninjaone_agent.safety import approval_decision, classify_tool
+
+
+def tool(name, read_only=None, destructive=None, description=""):
+    return {"name": name, "description": description,
+            "read_only_hint": read_only, "destructive_hint": destructive}
+
+
+def test_explicit_read_only_is_allowed():
+    assert classify_tool(tool("unknown", read_only=True)) == "read"
+    assert approval_decision(tool("unknown", read_only=True), False)[0] is True
+
+
+def test_unknown_tool_requires_approval():
+    assert classify_tool(tool("mystery_operation")) == "write"
+    assert approval_decision(tool("mystery_operation"), False)[1] == "approval_required"
+
+
+def test_delete_is_blocked_by_default():
+    item = tool("delete_device")
+    assert classify_tool(item) == "destructive"
+    assert approval_decision(item, False)[1] == "blocked"
+
+
+def test_list_get_are_read_only_fallback():
+    assert classify_tool(tool("list_devices")) == "read"
+    assert classify_tool(tool("get_device")) == "read"
