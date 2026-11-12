@@ -205,6 +205,13 @@ class NinjaOneAgent:
 
     async def run(self, message: str, model: str | None = None,
                   history: list[dict[str, str]] | None = None) -> dict[str, Any]:
+        # Keep the gateway subprocess alive for discovery, inspection, and execution
+        # during this turn instead of spawning a new Python process per tool call.
+        async with self.gateway.connection():
+            return await self._run_connected(message, model, history)
+
+    async def _run_connected(self, message: str, model: str | None = None,
+                             history: list[dict[str, str]] | None = None) -> dict[str, Any]:
         selected = self.foundry.resolve_model(model)
         try:
             available = await self.gateway.list_tools()
