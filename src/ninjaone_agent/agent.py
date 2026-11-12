@@ -43,7 +43,7 @@ def _tool_calls_from_content(content: str) -> list[tuple[str, dict[str, Any]]]:
     calls: list[tuple[str, dict[str, Any]]] = []
 
     blocks = re.findall(
-        r"<tool_call>\\s*(.*?)\\s*</tool_call>",
+        r"<tool_call>\s*(.*?)\s*</tool_call>",
         content or "",
         flags=re.IGNORECASE | re.DOTALL,
     )
