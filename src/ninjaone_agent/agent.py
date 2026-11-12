@@ -126,6 +126,36 @@ class NinjaOneAgent:
             else:
                 content = assistant.content or ""
                 parsed = _json_object(content) if used_fallback else None
+
+                # Some models accept the tools parameter but do not emit tool_calls.
+                # Give those models one explicit JSON-planning fallback before trusting
+                # a plain-text answer to a question that may require live tenant data.
+                if not parsed and not used_fallback:
+                    tool_reference = json.dumps(
+                        [{"name": t["name"], "description": t["description"],
+                          "input_schema": t["input_schema"]} for t in available],
+                        ensure_ascii=False,
+                    )
+                    try:
+                        fallback = self.foundry.complete(
+                            model=selected,
+                            messages=messages + [{
+                                "role": "system",
+                                "content": (
+                                    "Decide whether this user request needs live NinjaOne data or an operation. "
+                                    "If yes, return ONLY JSON: "
+                                    '{"tool_name":"exact_name","arguments":{}}. '
+                                    "If no tool is needed, answer in plain text. Available tools: " + tool_reference
+                                ),
+                            }],
+                        )
+                        fallback_content = fallback.choices[0].message.content or ""
+                        parsed = _json_object(fallback_content)
+                        if parsed:
+                            content = fallback_content
+                    except FoundryUnavailable:
+                        logger.warning("JSON planning fallback is unavailable for model %s", selected)
+
                 if parsed and isinstance(parsed.get("tool_name"), str):
                     messages.append({"role": "assistant", "content": content})
                     args = parsed.get("arguments") or {}
