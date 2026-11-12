@@ -41,6 +41,7 @@ NinjaOne Public API v2
 - If a live NinjaOne request stalls during tool planning, the agent makes a clarification-only model call and asks a focused question based on the conversation and discovery results instead of returning a generic tool-call failure. Clarification is never treated as write approval.
 - Simple inventory list/count questions use a deterministic read-only fast path when the connected gateway exposes the legacy `find_endpoint`, `describe_endpoint`, and `call` tools. It supports common synonyms and high-confidence resource-name typo correction, ranks discovered GET endpoints against the requested resource, and calls the selected endpoint without model planning/finalization. Filtered, investigative, write, ambiguous, and unsupported requests stay on the normal agent workflow.
 - MCP tool schemas are cached briefly (30 seconds) and verified GET endpoint metadata is cached for 15 minutes. Only metadata is cached; live NinjaOne response data is fetched on every request. Both caches are bounded and expire automatically.
+- A local OpenAPI catalogue indexes NinjaOne API v2 operations, descriptions, parameters, request fields, and response fields. Relevant entries are added to model context on demand; exact collection routes can bypass repeated endpoint discovery. It contains documentation only, never tenant records.
 - The browser chat shows each completed MCP step, its status, and returned result in a collapsible activity timeline. Activity is displayed when the response completes; it is not token-by-token/live streaming.
 
 ## Skills
@@ -112,6 +113,16 @@ ALLOW_DELETE_OPERATIONS=false
 ~~~
 
 The gateway path defaults assume the two repositories are sibling folders under C:\project. If yours differ, uncomment the NINJAONE_GATEWAY_DIR, NINJAONE_GATEWAY_PYTHON, and NINJAONE_GATEWAY_ENV_FILE overrides in .env.example.
+
+### Build the local NinjaOne API catalogue
+
+Run this once after pulling the repository, and repeat it when NinjaOne publishes an API specification update:
+
+~~~powershell
+.\.venv\Scripts\python.exe .\scripts\sync_ninjaone_api_catalog.py
+~~~
+
+The script downloads the official EU NinjaOne Public API v2 OpenAPI JSON and creates `data\ninjaone_api_catalog.json`. The generated file is local and ignored by Git. It includes endpoint summaries, parameter definitions, request-body fields, and response fields. The agent loads it at startup; restart the agent after refreshing it. If the catalogue is absent or invalid, the agent safely falls back to the existing MCP endpoint discovery.
 
 ### Configure the gateway
 
