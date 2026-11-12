@@ -820,6 +820,17 @@ class NinjaOneAgent:
         if not route:
             logger.warning("Device-access fast path unavailable: end-user collection missing from local API catalogue.")
             return None
+        documented_fields = {
+            str(field.get("name"))
+            for field in route.get("response_fields", [])
+            if isinstance(field, dict)
+        }
+        if "accessibleDeviceIds" not in documented_fields:
+            logger.warning(
+                "Device-access fast path skipped: catalogue response schema for %s "
+                "does not document accessibleDeviceIds.", route.get("path")
+            )
+            return None
 
         endpoint = f"GET {route['path']}"
         arguments = _tool_arguments(call_tool, {
