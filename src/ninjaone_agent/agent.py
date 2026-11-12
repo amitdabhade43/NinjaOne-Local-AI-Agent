@@ -1,4 +1,5 @@
 import json
+from difflib import get_close_matches
 from contextlib import AsyncExitStack
 import logging
 import re
@@ -10,6 +11,7 @@ from ninjaone_agent.foundry import FoundryClient, FoundryUnavailable
 from ninjaone_agent.mcp_gateway import MCPGatewayError, NinjaOneMCPGateway
 from ninjaone_agent.safety import approval_decision, classify_tool
 from ninjaone_agent.skills import render_master_instructions, render_skill_context
+from ninjaone_agent.cache import TTLCache
 from ninjaone_agent.approval import (
     ApprovalSigningError,
     mint_approval_token,
@@ -180,30 +182,55 @@ def _tool_failed(result: dict[str, Any]) -> bool:
 
 
 def _direct_inventory_intent(message: str) -> dict[str, str] | None:
-    """Recognize simple, unfiltered inventory list/count requests without an LLM round-trip."""
-    text = re.sub(r"\s+", " ", (message or "").casefold()).strip()
-    if not text or re.search(r"\b(where|whose|matching|search|details?|status|named|called|older than|newer than)\b", text):
+    """Recognize clear inventory list/count requests, including common fuzzy wording."""
+    text = re.sub(r"\\s+", " ", (message or "").casefold()).strip()
+    if not text:
         return None
-    count = bool(re.search(r"\b(count|total|how many|number of)\b", text))
-    list_intent = bool(re.search(r"\b(list|show|display|get|fetch|all|give me|what are|which are)\b", text))
-    implicit = bool(re.fullmatch(
-        r"(?:please\s+)?(?:all\s+)?(?:organizations?|orgs?|technicians?|devices?|endpoints?|users?|locations?|sites?|groups?)(?:\s+(?:names?|list|count))?[?.!]*",
-        text,
-    ))
-    if not (count or list_intent or implicit):
-        return None
-    targets = (
-        ("organizations", r"\b(organizations?|orgs?|customers?)\b"),
-        ("technicians", r"\b(technicians?)\b"),
-        ("devices", r"\b(devices?|endpoints?|laptops?|servers?|workstations?)\b"),
-        ("users", r"\b(users?|employees?)\b"),
-        ("locations", r"\b(locations?|sites?)\b"),
-        ("groups", r"\b(groups?)\b"),
+
+    # Filtered, investigative, or state-dependent requests must use the full agent.
+    filter_terms = (
+        r"\\b(where|whose|matching|details?|status|named|called|offline|online|inactive|"
+        r"active|stale|unhealthy|not reporting|not communicating|last seen|last check.?in|"
+        r"older than|newer than|with|without|in|for|under|since|before|after)\\b"
     )
-    for name, pattern in targets:
-        if re.search(pattern, text):
-            return {"resource": name, "operation": "count" if count else "list"}
-    return None
+    if re.search(filter_terms, text):
+        return None
+
+    count = bool(re.search(r"\\b(count|total|how many|number of)\\b", text))
+    list_intent = bool(re.search(
+        r"\\b(list|show|display|get|fetch|retrieve|pull|find|give me|what|which)\\b", text
+    ))
+
+    aliases = {
+        "organizations": ("organization", "organizations", "org", "orgs", "customer", "customers"),
+        "technicians": ("technician", "technicians", "tech", "techs"),
+        "devices": ("device", "devices", "endpoint", "endpoints", "laptop", "laptops",
+                    "server", "servers", "workstation", "workstations", "machine", "machines",
+                    "computer", "computers", "pc", "pcs"),
+        "users": ("user", "users", "employee", "employees", "enduser", "endusers"),
+        "locations": ("location", "locations", "site", "sites"),
+        "groups": ("group", "groups"),
+    }
+    tokens = re.findall(r"[a-z0-9]+", text)
+    matches: list[str] = []
+    for resource, terms in aliases.items():
+        for token in tokens:
+            # Conservative typo tolerance: only match a resource alias, never an endpoint/action.
+            if token in terms or get_close_matches(token, terms, n=1, cutoff=0.84):
+                matches.append(resource)
+                break
+
+    if len(set(matches)) != 1:
+        return None
+    if not (count or list_intent):
+        # Accept short noun phrases such as "all machines" or "PC inventory".
+        if not re.fullmatch(
+            r"(?:please\\s+)?(?:all\\s+)?[a-z0-9\\s-]+(?:[?.!]*)", text
+        ):
+            return None
+        if not any(word in text for word in ("all", "inventory", "names", "list", "count")):
+            return None
+    return {"resource": matches[0], "operation": "count" if count else "list"}
 
 
 def _walk_json(value: Any):
@@ -295,6 +322,10 @@ class NinjaOneAgent:
         self.settings = settings
         self.foundry = FoundryClient(settings)
         self.gateway = NinjaOneMCPGateway(settings)
+        # Cache tool schemas briefly; refresh automatically to pick up gateway changes.
+        self._tool_cache: TTLCache[list[dict[str, Any]]] = TTLCache(ttl_seconds=30, max_entries=2)
+        # Cache only verified GET route metadata, never live tenant response data.
+        self._endpoint_cache: TTLCache[dict[str, Any]] = TTLCache(ttl_seconds=900, max_entries=64)
         # Pending approvals are intentionally in-memory and expire on process restart.
         self.pending: dict[str, dict[str, Any]] = {}
 
@@ -365,47 +396,61 @@ class NinjaOneAgent:
     async def _run_direct_inventory(
         self, intent: dict[str, str], by_name: dict[str, dict[str, Any]]
     ) -> dict[str, Any] | None:
-        """Run a common read-only inventory request without model planning/finalization."""
+        """Execute a simple inventory GET, reusing verified endpoint metadata when cached."""
         resource = intent["resource"]
         steps: list[dict[str, Any]] = []
+        cached_route = self._endpoint_cache.get(resource)
 
-        discovery = by_name["find_endpoint"]
-        discovery_args = _tool_arguments(discovery, {"query": resource})
-        if discovery_args is None:
-            return None
-        found = await self.gateway.call_tool("find_endpoint", discovery_args)
-        steps.append({"tool": "find_endpoint", "status": "error" if _tool_failed(found) else "completed",
-                      "result": found})
-        if _tool_failed(found):
-            return {"answer": "NinjaOne endpoint discovery failed. No inventory data was retrieved.",
-                    "steps": steps, "pending_approvals": []}
+        if cached_route:
+            candidate = cached_route["candidate"]
+            detail = cached_route["detail"]
+            logger.info("Endpoint metadata cache hit for inventory resource %s.", resource)
+        else:
+            discovery = by_name["find_endpoint"]
+            discovery_args = _tool_arguments(discovery, {"query": resource})
+            if discovery_args is None:
+                return None
+            found = await self.gateway.call_tool("find_endpoint", discovery_args)
+            steps.append({"tool": "find_endpoint",
+                          "status": "error" if _tool_failed(found) else "completed",
+                          "result": found})
+            if _tool_failed(found):
+                return {"answer": "NinjaOne endpoint discovery failed. No inventory data was retrieved.",
+                        "steps": steps, "pending_approvals": []}
 
-        candidate = _endpoint_candidate(found)
-        if not candidate:
-            # If the endpoint catalogue response is not in a recognized shape, let
-            # the general model/tool workflow interpret it rather than guessing.
-            return None
-        endpoint = candidate.get("endpoint") or f"{candidate['method']} {candidate['path']}"
+            candidate = _endpoint_candidate(found)
+            if not candidate:
+                return None
+            endpoint = candidate.get("endpoint") or f"{candidate['method']} {candidate['path']}"
 
-        describe = by_name["describe_endpoint"]
-        describe_args = _tool_arguments(describe, {"endpoint": endpoint})
-        if describe_args is None:
-            return None
-        inspected = await self.gateway.call_tool("describe_endpoint", describe_args)
-        steps.append({"tool": "describe_endpoint",
-                      "status": "error" if _tool_failed(inspected) else "completed",
-                      "result": inspected})
-        if _tool_failed(inspected):
-            return {"answer": "NinjaOne endpoint inspection failed. No inventory data was retrieved.",
-                    "steps": steps, "pending_approvals": []}
+            describe = by_name["describe_endpoint"]
+            describe_args = _tool_arguments(describe, {"endpoint": endpoint})
+            if describe_args is None:
+                return None
+            inspected = await self.gateway.call_tool("describe_endpoint", describe_args)
+            steps.append({"tool": "describe_endpoint",
+                          "status": "error" if _tool_failed(inspected) else "completed",
+                          "result": inspected})
+            if _tool_failed(inspected):
+                return {"answer": "NinjaOne endpoint inspection failed. No inventory data was retrieved.",
+                        "steps": steps, "pending_approvals": []}
+            detail = _tool_result_object(inspected)
 
-        detail = _tool_result_object(inspected)
         method = str(detail.get("method") or candidate.get("method") or "").upper()
         path = detail.get("path") or candidate.get("path")
         if method != "GET" or not isinstance(path, str) or not path.startswith("/"):
+            # A stale or malformed route is discarded; do not attempt execution.
+            self._endpoint_cache.clear()
             return None
-        # This fast path is deliberately GET-only; it cannot bypass approval policy.
+
         endpoint_key = detail.get("endpoint") or candidate.get("endpoint") or f"GET {path}"
+        # Cache only after both discovery and description established a documented GET.
+        if not cached_route:
+            self._endpoint_cache.set(resource, {
+                "candidate": candidate,
+                "detail": detail,
+            })
+
         call_tool = by_name["call"]
         call_args = _tool_arguments(call_tool, {
             "endpoint": endpoint_key, "path_params": {}, "query": {}, "body": None
@@ -427,7 +472,6 @@ class NinjaOneAgent:
         elif records:
             answer = "\\n".join(json.dumps(row, ensure_ascii=False, default=str) for row in records)
         else:
-            # Preserve the exact API payload when its collection envelope is unfamiliar.
             answer = json.dumps(_tool_payloads(result), ensure_ascii=False, indent=2, default=str)
         return {"answer": answer, "steps": steps, "pending_approvals": []}
 
@@ -435,7 +479,10 @@ class NinjaOneAgent:
                              history: list[dict[str, str]] | None = None) -> dict[str, Any]:
         selected = self.foundry.resolve_model(model)
         try:
-            available = await self.gateway.list_tools()
+            available = self._tool_cache.get("mcp_tools")
+            if available is None:
+                available = await self.gateway.list_tools()
+                self._tool_cache.set("mcp_tools", available)
         except Exception as exc:
             # General conversation remains available when the NinjaOne gateway is offline.
             logger.warning("NinjaOne MCP tools unavailable for this request: %s", exc)
