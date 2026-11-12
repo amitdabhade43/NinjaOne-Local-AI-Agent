@@ -4,8 +4,10 @@ from contextlib import AsyncExitStack
 import logging
 import re
 import uuid
+from pathlib import Path
 from typing import Any
 
+from ninjaone_agent.api_catalog import NinjaOneAPICatalog
 from ninjaone_agent.config import Settings
 from ninjaone_agent.foundry import FoundryClient, FoundryUnavailable
 from ninjaone_agent.mcp_gateway import MCPGatewayError, NinjaOneMCPGateway
@@ -405,6 +407,10 @@ class NinjaOneAgent:
         self.settings = settings
         self.foundry = FoundryClient(settings)
         self.gateway = NinjaOneMCPGateway(settings)
+        # Load generated OpenAPI endpoint/field metadata once at startup.
+        # This is documentation only; live tenant data always comes from MCP.
+        catalog_path = Path(__file__).resolve().parents[2] / "data" / "ninjaone_api_catalog.json"
+        self.api_catalog = NinjaOneAPICatalog(catalog_path)
         # Cache tool schemas briefly; refresh automatically to pick up gateway changes.
         self._tool_cache: TTLCache[list[dict[str, Any]]] = TTLCache(ttl_seconds=30, max_entries=2)
         # Cache only verified GET route metadata, never live tenant response data.
@@ -537,12 +543,27 @@ class NinjaOneAgent:
         """Execute a simple inventory GET, reusing verified endpoint metadata when cached."""
         resource = intent["resource"]
         steps: list[dict[str, Any]] = []
+        collection_paths = {
+            "organizations": "/v2/organizations",
+            "technicians": "/v2/user/technicians",
+            "devices": "/v2/devices",
+            "users": "/v2/users",
+            "locations": "/v2/locations",
+            "groups": "/v2/groups",
+        }
+        catalog_route = self.api_catalog.get(collection_paths.get(resource, ""), method="GET")
         cached_route = self._endpoint_cache.get(resource)
 
         if cached_route:
             candidate = cached_route["candidate"]
             detail = cached_route["detail"]
             logger.info("Endpoint metadata cache hit for inventory resource %s.", resource)
+        elif catalog_route:
+            candidate = {"method": "GET", "path": catalog_route["path"],
+                         "endpoint": "GET " + catalog_route["path"]}
+            detail = {**catalog_route, "method": "GET", "path": catalog_route["path"],
+                      "endpoint": candidate["endpoint"]}
+            logger.info("Using local OpenAPI catalogue for inventory resource %s.", resource)
         else:
             discovery = by_name["find_endpoint"]
             discovery_args = _tool_arguments(discovery, {"query": resource})
@@ -632,6 +653,12 @@ class NinjaOneAgent:
             ("technicians", "technicians"),
             ("contacts", "contacts"),
         )
+        collection_paths = {
+            "console users": "/v2/users",
+            "end users": "/v2/user/end-users",
+            "technicians": "/v2/user/technicians",
+            "contacts": "/v2/contacts",
+        }
         steps: list[dict[str, Any]] = []
         matches: list[dict[str, Any]] = []
         searched: list[str] = []
@@ -641,6 +668,7 @@ class NinjaOneAgent:
         for label, query in categories:
             cache_key = f"people:{label}"
             cached_route = self._endpoint_cache.get(cache_key)
+            catalog_route = self.api_catalog.get(collection_paths[label], method="GET")
             if cached_route:
                 candidate = cached_route["candidate"]
                 detail = cached_route["detail"]
@@ -648,6 +676,13 @@ class NinjaOneAgent:
                     f"{candidate.get('method')} {candidate.get('path')}"
                 )
                 logger.info("People endpoint metadata cache hit for %s.", label)
+            elif catalog_route:
+                candidate = {"method": "GET", "path": catalog_route["path"],
+                             "endpoint": "GET " + catalog_route["path"]}
+                detail = {**catalog_route, "method": "GET", "path": catalog_route["path"],
+                          "endpoint": candidate["endpoint"]}
+                endpoint = candidate["endpoint"]
+                logger.info("Using local OpenAPI catalogue for people category %s.", label)
             else:
                 discovery_args = _tool_arguments(by_name["find_endpoint"], {"query": query})
                 if discovery_args is None:
@@ -794,6 +829,14 @@ class NinjaOneAgent:
             if item.get("role") in ("user", "assistant")
         )
         live_request = _likely_live_request(prior_context + " " + message)
+        catalog_matches = self.api_catalog.search(prior_context + " " + message, limit=8)
+        if catalog_matches:
+            # Supply only relevant API documentation, not the complete OpenAPI file.
+            system_text += (
+                "\n\nRelevant NinjaOne API catalogue entries (documentation only; "
+                "inspect the connected gateway schema before execution and use live MCP results):\n"
+                + json.dumps(catalog_matches, ensure_ascii=False)
+            )
         if live_request and not available:
             return {
                 "model": selected,
