@@ -1,5 +1,6 @@
 import json
 import logging
+import re
 import uuid
 from typing import Any
 
@@ -35,6 +36,94 @@ def _json_object(text: str) -> dict[str, Any] | None:
         return value if isinstance(value, dict) else None
     except json.JSONDecodeError:
         return None
+
+
+def _tool_calls_from_content(content: str) -> list[tuple[str, dict[str, Any]]]:
+    """Parse Qwen <tool_call> markup and the legacy JSON tool-plan format."""
+    calls: list[tuple[str, dict[str, Any]]] = []
+
+    blocks = re.findall(
+        r"<tool_call>\\s*(.*?)\\s*</tool_call>",
+        content or "",
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    for block in blocks:
+        try:
+            payload = json.loads(block)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(payload, dict):
+            continue
+        name = payload.get("name") or payload.get("tool_name")
+        arguments = payload.get("arguments", {})
+        if isinstance(name, str) and name and isinstance(arguments, dict):
+            calls.append((name, arguments))
+
+    if calls:
+        return calls
+
+    payload = _json_object(content or "")
+    if payload:
+        name = payload.get("tool_name") or payload.get("name")
+        arguments = payload.get("arguments", {})
+        if isinstance(name, str) and name and isinstance(arguments, dict):
+            calls.append((name, arguments))
+    return calls
+
+
+def _clean_model_content(content: str | None) -> str:
+    """Remove internal reasoning and tool-call markup from user-facing text."""
+    text = content or ""
+    text = re.sub(r"<think>.*?</think>", "", text, flags=re.IGNORECASE | re.DOTALL)
+    text = re.sub(r"<tool_call>.*?</tool_call>", "", text, flags=re.IGNORECASE | re.DOTALL)
+    text = re.sub(r"</?(?:think|tool_call)>", "", text, flags=re.IGNORECASE)
+    return text.strip()
+
+
+def _validate_tool_arguments(schema: dict[str, Any], arguments: dict[str, Any]) -> str | None:
+    """Validate common JSON Schema constraints before dispatching a model tool call."""
+    if schema.get("type") not in (None, "object"):
+        return "Tool input schema is not an object schema."
+    if not isinstance(arguments, dict):
+        return "Tool arguments must be a JSON object."
+
+    required = schema.get("required", [])
+    for key in required:
+        if key not in arguments:
+            return f"Missing required argument: {key}"
+
+    properties = schema.get("properties", {})
+    if schema.get("additionalProperties") is False:
+        unknown = sorted(set(arguments) - set(properties))
+        if unknown:
+            return "Unknown argument(s): " + ", ".join(unknown)
+
+    type_map = {
+        "string": str,
+        "integer": int,
+        "number": (int, float),
+        "boolean": bool,
+        "object": dict,
+        "array": list,
+    }
+    for key, value in arguments.items():
+        prop = properties.get(key, {})
+        expected = prop.get("type") if isinstance(prop, dict) else None
+        if isinstance(expected, list):
+            expected_types = [type_map[item] for item in expected if item in type_map]
+            if expected_types and not isinstance(value, tuple(expected_types)):
+                return f"Argument '{key}' must match one of these types: {', '.join(expected)}."
+        elif expected in type_map:
+            expected_type = type_map[expected]
+            if expected == "integer" and isinstance(value, bool):
+                return f"Argument '{key}' must be an integer."
+            if expected == "number" and isinstance(value, bool):
+                return f"Argument '{key}' must be a number."
+            if not isinstance(value, expected_type):
+                return f"Argument '{key}' must be of type {expected}."
+        if isinstance(prop, dict) and "enum" in prop and value not in prop["enum"]:
+            return f"Argument '{key}' must be one of the allowed values."
+    return None
 
 
 class NinjaOneAgent:
@@ -133,50 +222,88 @@ class NinjaOneAgent:
                     calls.append((call.function.name, args if isinstance(args, dict) else {}, call.id))
             else:
                 content = assistant.content or ""
-                parsed = _json_object(content) if used_fallback and available else None
+                parsed_calls = _tool_calls_from_content(content) if available else []
 
-                # Some models accept the tools parameter but do not emit tool_calls.
-                # Give those models one explicit JSON-planning fallback before trusting
-                # a plain-text answer to a question that may require live tenant data.
-                if not parsed and not used_fallback and available:
-                    tool_reference = json.dumps(
-                        [{"name": t["name"], "description": t["description"],
-                          "input_schema": t["input_schema"]} for t in available],
-                        ensure_ascii=False,
-                    )
-                    try:
-                        fallback = self.foundry.complete(
-                            model=selected,
-                            messages=messages + [{
-                                "role": "system",
-                                "content": (
-                                    "Decide whether this user request needs live NinjaOne data or an operation. "
-                                    "If yes, return ONLY JSON: "
-                                    '{"tool_name":"exact_name","arguments":{}}. '
-                                    "If no tool is needed, answer in plain text. Available tools: " + tool_reference
-                                ),
-                            }],
-                        )
-                        fallback_content = fallback.choices[0].message.content or ""
-                        parsed = _json_object(fallback_content)
-                        if parsed:
-                            content = fallback_content
-                    except FoundryUnavailable:
-                        logger.warning("JSON planning fallback is unavailable for model %s", selected)
-
-                if parsed and isinstance(parsed.get("tool_name"), str):
+                if parsed_calls:
+                    # Qwen commonly emits XML-style tool calls in message content
+                    # instead of OpenAI-compatible message.tool_calls.
                     messages.append({"role": "assistant", "content": content})
-                    args = parsed.get("arguments") or {}
-                    calls.append((parsed["tool_name"], args if isinstance(args, dict) else {}, None))
+                    calls.extend((name, args, None) for name, args in parsed_calls)
                 else:
-                    return {"model": selected, "answer": content, "steps": transcript,
-                            "pending_approvals": []}
+                    parsed = _json_object(content) if used_fallback and available else None
+
+                    # Some models accept the tools parameter but emit neither native
+                    # tool_calls nor Qwen markup. Ask for one explicit tool plan.
+                    if not parsed and not used_fallback and available:
+                        tool_reference = json.dumps(
+                            [{"name": t["name"], "description": t["description"],
+                              "input_schema": t["input_schema"]} for t in available],
+                            ensure_ascii=False,
+                        )
+                        try:
+                            fallback = self.foundry.complete(
+                                model=selected,
+                                messages=messages + [{
+                                    "role": "system",
+                                    "content": (
+                                        "Decide whether this request needs live NinjaOne data or an operation. "
+                                        "If yes, return ONLY a tool call as "
+                                        '<tool_call>{"name":"exact_name","arguments":{}}</tool_call>. '
+                                        "If no tool is needed, answer normally. Available tools: " + tool_reference
+                                    ),
+                                }],
+                            )
+                            fallback_content = fallback.choices[0].message.content or ""
+                            parsed_calls = _tool_calls_from_content(fallback_content)
+                            if parsed_calls:
+                                content = fallback_content
+                                messages.append({"role": "assistant", "content": content})
+                                calls.extend((name, args, None) for name, args in parsed_calls)
+                            else:
+                                parsed = _json_object(fallback_content)
+                                if parsed:
+                                    content = fallback_content
+                        except FoundryUnavailable:
+                            logger.warning("Tool-planning fallback is unavailable for model %s", selected)
+
+                    if not calls:
+                        if parsed and isinstance(parsed.get("tool_name") or parsed.get("name"), str):
+                            messages.append({"role": "assistant", "content": content})
+                            args = parsed.get("arguments") or {}
+                            calls.append((parsed.get("tool_name") or parsed.get("name"),
+                                          args if isinstance(args, dict) else {}, None))
+                        else:
+                            safe_answer = _clean_model_content(content)
+                            if not safe_answer:
+                                safe_answer = (
+                                    "I couldn't execute a valid NinjaOne tool call for this request. "
+                                    "Please try again; no live tenant data was retrieved."
+                                    if available else
+                                    "The NinjaOne MCP gateway is unavailable, so I couldn't retrieve live tenant data."
+                                )
+                            return {"model": selected, "answer": safe_answer, "steps": transcript,
+                                    "pending_approvals": []}
 
             for tool_name, arguments, call_id in calls:
                 tool = by_name.get(tool_name)
                 if not tool:
                     transcript.append({"tool": tool_name, "status": "rejected", "error": "Unknown MCP tool name."})
                     messages.append({"role": "system", "content": f"Tool {tool_name} does not exist. Available tools: {', '.join(by_name)}"})
+                    continue
+
+                validation_error = _validate_tool_arguments(
+                    tool.get("input_schema") or {}, arguments
+                )
+                if validation_error:
+                    transcript.append({
+                        "tool": tool_name,
+                        "status": "rejected",
+                        "error": validation_error,
+                    })
+                    messages.append({
+                        "role": "system",
+                        "content": f"Invalid arguments for {tool_name}: {validation_error}. Correct the arguments before retrying.",
+                    })
                     continue
 
                 kind = classify_tool(tool, arguments)
@@ -218,5 +345,5 @@ class NinjaOneAgent:
             model=selected,
             messages=messages + [{"role": "system", "content": "Summarize only the tool results already present. If incomplete, say so."}],
         )
-        return {"model": selected, "answer": final.choices[0].message.content or "",
+        return {"model": selected, "answer": _clean_model_content(final.choices[0].message.content),
                 "steps": transcript, "pending_approvals": []}
