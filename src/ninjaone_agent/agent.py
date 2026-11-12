@@ -678,10 +678,48 @@ class NinjaOneAgent:
                                           args if isinstance(args, dict) else {}, None))
                         else:
                             if live_request:
-                                safe_answer = (
-                                    "I couldn't execute a valid NinjaOne tool call for this request. "
-                                    "No live tenant data was retrieved and no operation was executed."
-                                )
+                                # A failed tool-planning round is not a reason to abandon the
+                                # conversation. Ask the model for a user-facing clarification
+                                # grounded in the request and any discovery results already seen.
+                                # This completion has no tools, so it cannot execute an operation.
+                                try:
+                                    clarification = self.foundry.complete(
+                                        model=selected,
+                                        messages=messages + [{
+                                            "role": "system",
+                                            "content": (
+                                                "You are now in clarification mode. Do not call tools, "
+                                                "propose JSON, or claim that an operation was executed. "
+                                                "Review the original user request and the complete conversation, "
+                                                "including any MCP discovery results and errors. If a required "
+                                                "detail is missing, ask the smallest set of specific questions "
+                                                "needed to continue. If multiple interpretations would lead to "
+                                                "different NinjaOne resources or permissions, explain the "
+                                                "distinction briefly and ask the user to choose. Do not ask for "
+                                                "details that can safely be resolved by read-only API discovery. "
+                                                "If the request is already clear but discovery failed, explain "
+                                                "what failed and what information or access is needed. Be "
+                                                "transparent that no write was performed."
+                                            ),
+                                        }],
+                                    )
+                                    safe_answer = _clean_model_content(
+                                        clarification.choices[0].message.content
+                                    )
+                                    if (not safe_answer or _tool_calls_from_content(safe_answer)
+                                            or _json_object(safe_answer)):
+                                        safe_answer = (
+                                            "I need a little more information before I can safely continue. "
+                                            "No change has been made. Please specify the target user/resource "
+                                            "and the intended group, policy, or access change."
+                                        )
+                                except Exception:
+                                    logger.exception("Clarification response generation failed.")
+                                    safe_answer = (
+                                        "I couldn't complete the NinjaOne request safely. "
+                                        "No change was made. Please provide the target and the intended "
+                                        "group, policy, or access change so I can narrow the operation."
+                                    )
                             else:
                                 safe_answer = _clean_model_content(content) or "I couldn't generate a response."
                             return {"model": selected, "answer": safe_answer, "steps": transcript,
