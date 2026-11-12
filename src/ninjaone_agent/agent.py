@@ -513,7 +513,7 @@ class NinjaOneAgent:
         return "\n".join(lines)
 
     async def _run_direct_inventory(
-        self, intent: dict[str, str], by_name: dict[str, dict[str, Any]]
+        self, intent: dict[str, str], by_name: dict[str, dict[str, Any]], model: str
     ) -> dict[str, Any] | None:
         """Execute a simple inventory GET, reusing verified endpoint metadata when cached."""
         resource = intent["resource"]
@@ -595,7 +595,7 @@ class NinjaOneAgent:
         elif records:
             fallback = self._format_records_fallback(records[:30], resource.title())
             answer = self._format_structured_result(
-                self.foundry.resolve_model(), f"{intent['operation']} {resource}",
+                model, f"{intent['operation']} {resource}",
                 records[:30], fallback
             )
         else:
@@ -603,7 +603,7 @@ class NinjaOneAgent:
         return {"answer": answer, "steps": steps, "pending_approvals": []}
 
     async def _run_people_name_search(
-        self, name: str, by_name: dict[str, dict[str, Any]]
+        self, name: str, by_name: dict[str, dict[str, Any]], model: str
     ) -> dict[str, Any] | None:
         """Search all exposed people collections and filter the live records by name."""
         required = {"find_endpoint", "describe_endpoint", "call"}
@@ -715,7 +715,7 @@ class NinjaOneAgent:
         if matches:
             fallback = self._format_records_fallback(matches, f"People matching '{name}'")
             answer = self._format_structured_result(
-                self.foundry.resolve_model(),
+                model,
                 f"Find people matching the name {name}. Categories searched: {', '.join(searched)}.",
                 matches, fallback,
             )
@@ -783,7 +783,7 @@ class NinjaOneAgent:
         people_name = _people_name_search_intent(message)
         if people_name and {"find_endpoint", "describe_endpoint", "call"}.issubset(tool_names):
             logger.info("Using cross-category people name search for %r.", people_name)
-            people_result = await self._run_people_name_search(people_name, by_name)
+            people_result = await self._run_people_name_search(people_name, by_name, selected)
             if people_result is not None:
                 people_result["model"] = selected
                 return people_result
@@ -792,7 +792,7 @@ class NinjaOneAgent:
         if direct_intent and {"find_endpoint", "describe_endpoint", "call"}.issubset(tool_names):
             logger.info("Using direct read-only inventory path for %s (%s).",
                         direct_intent["resource"], direct_intent["operation"])
-            direct_result = await self._run_direct_inventory(direct_intent, by_name)
+            direct_result = await self._run_direct_inventory(direct_intent, by_name, selected)
             if direct_result is not None:
                 direct_result["model"] = selected
                 return direct_result
