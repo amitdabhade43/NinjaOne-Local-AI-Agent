@@ -41,6 +41,11 @@ SYNONYMS = {
     "hotfix": {"patch", "patches"},
     "employee": {"user", "users"},
     "employees": {"user", "users"},
+    "unhealthy": {"device", "devices", "health", "alerts"},
+    "attention": {"alerts", "issues", "health", "devices"},
+    "noncompliant": {"policy", "policies", "compliance"},
+    "failed": {"failure", "failures", "patch", "patches", "alerts"},
+    "broken": {"service", "services", "device", "devices"},
 }
 STOP_WORDS = {
     "a", "an", "and", "are", "all", "any", "can", "could", "do", "for",
