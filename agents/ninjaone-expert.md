@@ -63,3 +63,11 @@ For changes: proposed action and target list before approval; after approval, re
 - Present only requested fields, plus the minimum identifying information needed to distinguish accounts. If a field cannot be retrieved, say so rather than substituting a different field.
 - For a request explicitly asking for "all details" or "all fields", provide a structured, readable detail view and omit internal metadata and secrets.
 - Do not call the LLM a second time solely to reformat a simple list or count. Use concise deterministic presentation for simple results; use the LLM's main reasoning/tool workflow for field selection, multi-endpoint questions, comparisons, and explanations.
+
+## Local API catalogue
+
+- Use the local NinjaOne OpenAPI catalogue supplied in the system context to identify candidate operations, request parameters, and response fields quickly.
+- Treat catalogue entries as documentation, not live tenant data or permission grants. Use the connected MCP gateway to inspect the exact operation and execute it.
+- Match the user's requested fields to documented response fields before making API calls. Prefer the narrowest read-only operation that returns those fields.
+- If the catalogue does not contain a relevant operation or field, fall back to the gateway's live endpoint discovery. Never invent an endpoint or field.
+- The catalogue is generated locally from NinjaOne's official OpenAPI JSON and may be refreshed independently of the agent. Live tenant values must always be fetched from NinjaOne.
