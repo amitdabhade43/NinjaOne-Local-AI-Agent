@@ -8,6 +8,40 @@ DEFAULT_REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_SKILLS_DIR = DEFAULT_REPO_ROOT / "skills"
 DEFAULT_AGENT_FILE = DEFAULT_REPO_ROOT / "agents" / "ninjaone-expert.md"
 ALWAYS_LOAD = {"ninjaone-api-discovery"}
+SYNONYMS = {
+    "machine": {"device", "devices"},
+    "machines": {"device", "devices"},
+    "computer": {"device", "devices"},
+    "computers": {"device", "devices"},
+    "endpoint": {"device", "devices"},
+    "endpoints": {"device", "devices"},
+    "laptop": {"device", "devices"},
+    "laptops": {"device", "devices"},
+    "server": {"device", "devices"},
+    "servers": {"device", "devices"},
+    "offline": {"device", "devices", "status", "checkin"},
+    "stale": {"device", "devices", "checkin"},
+    "org": {"organization", "organizations"},
+    "orgs": {"organization", "organizations"},
+    "customer": {"organization", "organizations"},
+    "customers": {"organization", "organizations"},
+    "site": {"location", "locations"},
+    "sites": {"location", "locations"},
+    "incident": {"alert", "alerts", "activity"},
+    "incidents": {"alert", "alerts", "activity"},
+    "problem": {"alert", "alerts", "issue"},
+    "problems": {"alert", "alerts", "issue"},
+    "repair": {"remediation", "operations"},
+    "repairing": {"remediation", "operations"},
+    "reboot": {"restart", "operations"},
+    "restarting": {"restart", "operations"},
+    "storage": {"disk", "disks"},
+    "space": {"disk", "disks"},
+    "updates": {"patch", "patches"},
+    "hotfix": {"patch", "patches"},
+    "employee": {"user", "users"},
+    "employees": {"user", "users"},
+}
 STOP_WORDS = {
     "a", "an", "and", "are", "all", "any", "can", "could", "do", "for",
     "from", "get", "give", "have", "how", "i", "in", "is", "it", "list",
@@ -17,10 +51,14 @@ STOP_WORDS = {
 
 
 def _tokens(value: str) -> set[str]:
-    return {
+    tokens = {
         token for token in re.findall(r"[a-z0-9]+", value.casefold())
         if len(token) > 2 and token not in STOP_WORDS
     }
+    expanded = set(tokens)
+    for token in tokens:
+        expanded.update(SYNONYMS.get(token, set()))
+    return expanded
 
 
 def _metadata(markdown: str) -> tuple[str, str]:
