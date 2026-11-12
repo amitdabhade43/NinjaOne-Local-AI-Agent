@@ -203,6 +203,14 @@ class NinjaOneAPICatalog:
     def endpoint_count(self) -> int:
         return len(self._endpoints)
 
+    def get(self, path: str, method: str = "GET") -> dict[str, Any] | None:
+        """Look up one exact documented operation without running a fuzzy search."""
+        wanted_method = method.upper()
+        for endpoint in self._endpoints:
+            if endpoint.get("path") == path and endpoint.get("method") == wanted_method:
+                return self._public_summary(endpoint)
+        return None
+
     def search(self, query: str, limit: int = 8, method: str | None = None) -> list[dict[str, Any]]:
         """Rank documented endpoints by query words, path, tags, and field names."""
         words = {word for word in re.findall(r"[a-z0-9]+", (query or "").casefold()) if len(word) > 1}
