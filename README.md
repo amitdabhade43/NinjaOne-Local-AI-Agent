@@ -33,7 +33,7 @@ NinjaOne Public API v2
 - Master agent instructions plus focused domain skills with progressive disclosure.
 - Live results are returned to the model; the agent is instructed not to invent tenant facts.
 - GET operations can run automatically.
-- POST/PUT/PATCH operations require explicit approval and a backend-generated token bound to method, resolved path, and request-body hash.
+- POST/PUT/PATCH operations require explicit approval. When the MCP tool schema exposes the gateway HMAC approval_token, the backend signs the exact method, resolved path, and request-body hash after approval; legacy tools without that parameter remain protected by the agent approval gate and cannot receive an injected unknown argument.
 - DELETE is blocked by the gateway and is not enabled by this agent.
 - The agent supports the current schema-driven gateway tools and includes prompt guidance for the legacy endpoint-discovery tool names.
 
@@ -113,7 +113,7 @@ Keep NinjaOne API credentials and NINJA_MCP_APPROVAL_SECRET only in:
 
 C:\project\NinjaRMM-API-Gateway-MCP\.env
 
-The approval secret must be the same secret configured for the gateway's HMAC verifier. The agent reads it from the gateway environment file only inside the trusted backend when an approval is accepted. Never put it in a prompt, model context, browser JavaScript, chat history, or Git.
+When the active MCP tool schema exposes the gateway HMAC approval_token, the approval secret must be the same secret configured for the gateway's HMAC verifier. The agent reads it from the gateway environment file only inside the trusted backend when an approval is accepted. Legacy tool schemas without an approval_token parameter use the agent-side human approval gate and do not receive an extra argument. Never put the secret in a prompt, model context, browser JavaScript, chat history, or Git.
 
 The gateway must have its own dependencies installed in its own virtual environment. The agent starts it with:
 
