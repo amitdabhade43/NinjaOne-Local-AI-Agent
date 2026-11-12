@@ -77,8 +77,8 @@ def _metadata(markdown: str) -> tuple[str, str]:
     name_match = re.search(r"(?m)^name:\s*([^\n]+)", frontmatter)
     description_match = re.search(r"(?m)^description:\s*(.+)", frontmatter)
     return (
-        name_match.group(1).strip().strip("'\\"") if name_match else "",
-        description_match.group(1).strip().strip("'\\"") if description_match else "",
+        name_match.group(1).strip().strip("'").strip('"') if name_match else "",
+        description_match.group(1).strip().strip("'").strip('"') if description_match else "",
     )
 
 
