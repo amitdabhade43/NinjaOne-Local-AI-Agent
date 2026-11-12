@@ -25,3 +25,10 @@ def test_delete_is_blocked_by_default():
 def test_list_get_are_read_only_fallback():
     assert classify_tool(tool("list_devices")) == "read"
     assert classify_tool(tool("get_device")) == "read"
+
+
+def test_dynamic_gateway_call_uses_http_method():
+    generic = tool("call")
+    assert classify_tool(generic, {"method": "GET"}) == "read"
+    assert approval_decision(generic, False, {"method": "POST"})[1] == "approval_required"
+    assert approval_decision(generic, False, {"method": "DELETE"})[1] == "blocked"
