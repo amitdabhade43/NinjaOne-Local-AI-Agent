@@ -341,7 +341,7 @@ def _endpoint_candidate(
 def _inventory_records(result: dict[str, Any]) -> list[dict[str, Any]]:
     """Extract records from common NinjaOne collection response envelopes."""
     wrappers = ("items", "data", "results", "records", "organizations", "devices",
-                "technicians", "users", "locations", "groups")
+                "technicians", "users", "locations", "groups", "contacts", "endUsers", "end_users")
     for payload in _tool_payloads(result):
         for item in _walk_json(payload):
             for key in wrappers:
@@ -553,7 +553,7 @@ class NinjaOneAgent:
 
         categories = (
             ("console users", "users"),
-            ("end users", "end users"),
+            ("end users", "end-users"),
             ("technicians", "technicians"),
             ("contacts", "contacts"),
         )
