@@ -8,6 +8,12 @@ from ninjaone_agent.config import Settings
 from ninjaone_agent.foundry import FoundryClient, FoundryUnavailable
 from ninjaone_agent.mcp_gateway import NinjaOneMCPGateway
 from ninjaone_agent.safety import approval_decision, classify_tool
+from ninjaone_agent.skills import render_skill_context\nfrom ninjaone_agent.approval import (
+    ApprovalSigningError,
+    mint_approval_token,
+    resolve_path,
+)
+from urllib.parse import urlsplit
 
 logger = logging.getLogger(__name__)
 
@@ -126,6 +132,23 @@ def _validate_tool_arguments(schema: dict[str, Any], arguments: dict[str, Any]) 
     return None
 
 
+def _tool_result_object(result: dict[str, Any]) -> dict[str, Any]:
+    """Read structured MCP content or parse its JSON text representation."""
+    structured = result.get("structured_content")
+    if isinstance(structured, dict):
+        return structured
+    for item in result.get("content") or []:
+        if not isinstance(item, str):
+            continue
+        try:
+            parsed = json.loads(item)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(parsed, dict):
+            return parsed
+    return {}
+
+
 class NinjaOneAgent:
     def __init__(self, settings: Settings):
         self.settings = settings
@@ -146,12 +169,38 @@ class NinjaOneAgent:
             raise KeyError("Approval request was not found or has expired.")
         if not approved:
             return {"status": "rejected", "message": "The operation was not executed."}
-        kind = classify_tool(pending["tool"], pending["arguments"])
-        if kind == "destructive" and not self.settings.allow_delete_operations:
-            return {"status": "blocked", "message": "Destructive operations are disabled by configuration."}
-        result = await self.gateway.call_tool(pending["tool_name"], pending["arguments"])
-        return {"status": "executed" if not result["is_error"] else "error",
-                "tool": pending["tool_name"], "result": result}
+
+        kind = pending.get("kind", "write")
+        if kind == "destructive":
+            return {"status": "blocked", "message": "Destructive operations are disabled by policy."}
+
+        arguments = dict(pending["arguments"])
+        context = pending.get("approval_context")
+        if context:
+            try:
+                # The token is created only after the approval endpoint receives
+                # the human decision. It is never sent to the model.
+                arguments["approval_token"] = mint_approval_token(
+                    method=context["method"],
+                    path=context["path"],
+                    body=context.get("body"),
+                    env_file=self.gateway.env_file,
+                )
+            except ApprovalSigningError as exc:
+                return {"status": "blocked", "message": str(exc)}
+        else:
+            return {
+                "status": "blocked",
+                "message": "This gateway write operation has no verified approval-token mapping. Nothing was executed.",
+            }
+
+        result = await self.gateway.call_tool(pending["tool_name"], arguments)
+        return {
+            "status": "executed" if not result["is_error"] else "error",
+            "tool": pending["tool_name"],
+            "result": result,
+            "verification": "The gateway accepted the operation response; independently verify the resulting device/resource state.",
+        }
 
     async def run(self, message: str, model: str | None = None,
                   history: list[dict[str, str]] | None = None) -> dict[str, Any]:
@@ -170,11 +219,26 @@ class NinjaOneAgent:
             "Prefer read-only tools. Do not claim an operation succeeded unless its tool result confirms it. "
             "If no tool is needed, answer normally. Keep answers concise and identify missing data honestly."
         )
+        tool_names = set(by_name)
+        if "discover_endpoints" in tool_names:
+            system_text += (
+                " For NinjaOne API v2, use discover_endpoints, inspect_endpoint, then execute_endpoint. "
+                "Use execute_paginated_endpoint only with documented pagination parameters. "
+                "Never send approval_token; the backend injects it after human approval."
+            )
+        elif "find_endpoint" in tool_names:
+            system_text += (
+                " This gateway uses find_endpoint, describe_endpoint, call, and raw_call. "
+                "Discover and describe an endpoint before calling it; never invent endpoint parameters."
+            )
         if not available:
             system_text += (
                 " The NinjaOne MCP gateway is currently unavailable or returned no tools. "
                 "You may answer general questions, but do not claim to have retrieved live tenant data."
             )
+        skill_context = render_skill_context(message)
+        if skill_context:
+            system_text += "\\n\\n" + skill_context
         messages: list[dict[str, Any]] = [{"role": "system", "content": system_text}]
         for item in (history or [])[-8:]:
             if item.get("role") in ("user", "assistant") and item.get("content"):
@@ -306,18 +370,80 @@ class NinjaOneAgent:
                     })
                     continue
 
-                kind = classify_tool(tool, arguments)
-                allowed, decision = approval_decision(tool, self.settings.allow_delete_operations, arguments)
+                # Never accept an approval token generated by the model.
+                arguments = dict(arguments)
+                arguments.pop("approval_token", None)
+                approval_context = None
+                classification_arguments = dict(arguments)
+
+                if tool_name == "execute_endpoint":
+                    endpoint_key = arguments.get("endpoint")
+                    if not isinstance(endpoint_key, str):
+                        transcript.append({"tool": tool_name, "status": "rejected",
+                                           "error": "A discovered endpoint key is required."})
+                        continue
+                    try:
+                        inspected = await self.gateway.call_tool(
+                            "inspect_endpoint", {"endpoint": endpoint_key}
+                        )
+                        detail = _tool_result_object(inspected)
+                        method = str(detail.get("method") or "").upper()
+                        template = detail.get("path")
+                        if inspected.get("is_error") or method not in {"GET", "POST", "PUT", "PATCH"} or not isinstance(template, str):
+                            raise ValueError("Could not verify the endpoint method and path from inspect_endpoint.")
+                        resolved = resolve_path(template, arguments.get("path_params") or {})
+                        approval_context = {
+                            "method": method, "path": resolved, "body": arguments.get("body")
+                        }
+                        classification_arguments["http_method"] = method
+                    except Exception as exc:
+                        transcript.append({"tool": tool_name, "status": "rejected",
+                                           "error": f"Endpoint inspection failed: {exc}"})
+                        messages.append({"role": "system", "content": f"Do not execute {endpoint_key}; endpoint inspection failed: {exc}"})
+                        continue
+                elif tool_name == "execute_raw_request":
+                    raw_request = arguments.get("request", "")
+                    parts = raw_request.strip().split(None, 1) if isinstance(raw_request, str) else []
+                    if len(parts) != 2:
+                        transcript.append({"tool": tool_name, "status": "rejected",
+                                           "error": "Expected METHOD /relative/path."})
+                        continue
+                    method = parts[0].upper()
+                    parsed_url = urlsplit(parts[1])
+                    if method not in {"GET", "POST", "PUT", "PATCH"} or parsed_url.scheme or parsed_url.netloc or not parsed_url.path.startswith("/"):
+                        transcript.append({"tool": tool_name, "status": "rejected",
+                                           "error": "Only supported relative NinjaOne API paths can be executed."})
+                        continue
+                    approval_context = {
+                        "method": method, "path": parsed_url.path, "body": arguments.get("body")
+                    }
+                    classification_arguments["http_method"] = method
+                elif tool_name == "execute_paginated_endpoint":
+                    classification_arguments["http_method"] = "GET"
+
+                kind = classify_tool(tool, classification_arguments)
+                allowed, decision = approval_decision(
+                    tool, self.settings.allow_delete_operations, classification_arguments
+                )
                 if kind == "write" and not self.settings.approval_required_for_writes:
-                    allowed, decision = True, "allowed"
+                    # Do not permit a config flag to bypass the gateway's HMAC approval.
+                    allowed, decision = False, "approval_required"
                 if not allowed:
                     if decision == "blocked":
                         transcript.append({"tool": tool_name, "status": "blocked",
                                            "message": "Destructive operation is disabled by configuration."})
                         messages.append({"role": "system", "content": f"{tool_name} is blocked by policy. Do not retry it."})
                         continue
+                    if kind == "write" and approval_context is None:
+                        transcript.append({"tool": tool_name, "status": "blocked",
+                                           "error": "No trusted method/path/body approval mapping exists for this write."})
+                        messages.append({"role": "system", "content": f"{tool_name} cannot be safely approved by this backend. Do not retry it."})
+                        continue
                     approval_id = str(uuid.uuid4())
-                    self.pending[approval_id] = {"tool": tool, "tool_name": tool_name, "arguments": arguments}
+                    self.pending[approval_id] = {
+                        "tool": tool, "tool_name": tool_name, "arguments": arguments,
+                        "approval_context": approval_context, "kind": kind,
+                    }
                     transcript.append({"tool": tool_name, "status": "approval_required", "approval_id": approval_id})
                     return {
                         "model": selected,
