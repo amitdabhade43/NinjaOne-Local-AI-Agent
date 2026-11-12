@@ -261,17 +261,17 @@ def _people_name_search_intent(message: str) -> str | None:
 
 def _device_access_name_intent(message: str) -> str | None:
     """Recognize a direct read-only question about one person's accessible devices."""
-    text = re.sub(r"\\s+", " ", (message or "")).strip()
+    text = re.sub(r"\s+", " ", (message or "")).strip()
     patterns = (
-        r"(?:how many|number of|count of)\\s+(?:devices?\\s+)?(?:device\\s+)?access(?:ible\\s+devices?)?\\s+(?:does|do|has|have)\\s+(.+?)(?:\\s+in\\s+ninjaone)?[?.!]*$",
-        r"(?:how many|number of|count of)\\s+(?:accessible\\s+)?devices?\\s+(?:can|does)\\s+(.+?)\\s+access(?:\\s+in\\s+ninjaone)?[?.!]*$",
-        r"(?:show|list)\\s+(.+?)['’]s\\s+(?:accessible\\s+)?devices?[?.!]*$",
+        r"(?:how many|number of|count of)\s+(?:devices?\s+)?(?:device\s+)?access(?:ible\s+devices?)?\s+(?:does|do|has|have)\s+(.+?)(?:\s+in\s+ninjaone)?[?.!]*$",
+        r"(?:how many|number of|count of)\s+(?:accessible\s+)?devices?\s+(?:can|does)\s+(.+?)\s+access(?:\s+in\s+ninjaone)?[?.!]*$",
+        r"(?:show|list)\s+(.+?)['’]s\s+(?:accessible\s+)?devices?[?.!]*$",
     )
     for pattern in patterns:
         match = re.search(pattern, text, flags=re.IGNORECASE)
         if match:
-            name = match.group(1).strip(" \\'\\"")
-            if len(name.split()) >= 2 and not re.search(r"\\b(all users|everyone|users)\\b", name, re.I):
+            name = match.group(1).strip(" '\"")
+            if len(name.split()) >= 2 and not re.search(r"\b(all users|everyone|users)\b", name, re.I):
                 return name
     return None
 
