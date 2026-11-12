@@ -14,5 +14,6 @@ def test_fuzzy_customer_language_selects_organization_skill():
 
 def test_live_request_detector_handles_fuzzy_rmm_questions():
     assert _likely_live_request("Which ones are offline and need attention?")
+    assert _likely_live_request("What needs attention across the fleet?")
     assert _likely_live_request("Can you restart the NinjaOne service?")
     assert not _likely_live_request("Hello, how are you?")
