@@ -240,7 +240,7 @@ def _people_name_search_intent(message: str) -> str | None:
     """Extract an explicit name filter for cross-category people searches."""
     text = re.sub(r"\s+", " ", (message or "")).strip()
     patterns = (
-        r"\b(?:with|whose)\s+(?:first\s+|last\s+|full\s+)?name\s+(?:contains?|is|starts?\s+with)\s+['\"“]?([^'\"”?.!,;]+)",
+        r"\b(?:with|whose)\s+(?:first\s+|last\s+|full\s+)?name(?:\s+(?:contains?|is|starts?\s+with))?\s+['\"“]?([^'\"”?.!,;]+)",
         r"\b(?:users?|technicians?|contacts?|people)\s+(?:named|called)\s+['\"“]?([^'\"”?.!,;]+)",
         r"\bname\s+contains?\s+['\"“]?([^'\"”?.!,;]+)",
     )
