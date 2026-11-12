@@ -12,11 +12,25 @@ def test_direct_inventory_intent_routes_simple_inventory_questions():
     assert _direct_inventory_intent("How many devices do we manage?") == {
         "resource": "devices", "operation": "count"
     }
+    assert _direct_inventory_intent("Show me all machines") == {
+        "resource": "devices", "operation": "list"
+    }
+    assert _direct_inventory_intent("Which PCs?") == {
+        "resource": "devices", "operation": "list"
+    }
+    assert _direct_inventory_intent("List all devics") == {
+        "resource": "devices", "operation": "list"
+    }
+    assert _direct_inventory_intent("What are our customer orgs?") == {
+        "resource": "organizations", "operation": "list"
+    }
 
 
 def test_direct_inventory_intent_skips_filtered_requests():
     assert _direct_inventory_intent("Show devices where status is offline") is None
     assert _direct_inventory_intent("Investigate device 12345") is None
+    assert _direct_inventory_intent("Show computers not reporting") is None
+    assert _direct_inventory_intent("List devices in HOERBIGER") is None
 
 
 def test_endpoint_candidate_requires_documented_get_path():
