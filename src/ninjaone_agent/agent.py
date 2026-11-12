@@ -8,7 +8,7 @@ from ninjaone_agent.config import Settings
 from ninjaone_agent.foundry import FoundryClient, FoundryUnavailable
 from ninjaone_agent.mcp_gateway import NinjaOneMCPGateway
 from ninjaone_agent.safety import approval_decision, classify_tool
-from ninjaone_agent.skills import render_skill_context
+from ninjaone_agent.skills import render_master_instructions, render_skill_context
 from ninjaone_agent.approval import (
     ApprovalSigningError,
     mint_approval_token,
@@ -237,6 +237,9 @@ class NinjaOneAgent:
                 " The NinjaOne MCP gateway is currently unavailable or returned no tools. "
                 "You may answer general questions, but do not claim to have retrieved live tenant data."
             )
+        master_instructions = render_master_instructions()
+        if master_instructions:
+            system_text += "\n\n" + master_instructions
         skill_context = render_skill_context(message)
         if skill_context:
             system_text += "\n\n" + skill_context
