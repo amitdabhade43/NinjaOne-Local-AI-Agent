@@ -5,76 +5,66 @@
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>NinjaOne Local AI Agent</title>
 <style>
-:root{color-scheme:dark;font-family:Segoe UI,Arial,sans-serif;background:#10151d;color:#e8edf5}
-*{box-sizing:border-box}body{margin:0;min-height:100vh;display:flex;flex-direction:column}
-header{padding:16px 22px;border-bottom:1px solid #293342;display:flex;justify-content:space-between;align-items:center}
-h1{font-size:18px;margin:0}.sub{font-size:12px;color:#9eacbd;margin-top:4px}
-main{width:min(980px,100%);margin:0 auto;padding:20px;display:flex;flex-direction:column;gap:14px;flex:1}
-#status{font-size:12px;color:#9eacbd}.toolbar{display:flex;gap:10px;align-items:center}
-select,textarea,button{font:inherit;border:1px solid #39485c;border-radius:8px;background:#182231;color:#e8edf5;padding:10px}
-select{max-width:360px}#chat{display:flex;flex-direction:column;gap:12px;flex:1}
-.msg{padding:13px 15px;border:1px solid #29384a;border-radius:10px;white-space:pre-wrap;line-height:1.5;overflow-wrap:anywhere}
-.user{background:#1a2c42;align-self:flex-end;max-width:88%}.assistant{background:#171f2b;align-self:stretch}
-form{display:flex;gap:10px}textarea{flex:1;resize:vertical;min-height:58px}button{cursor:pointer;background:#245da8;border-color:#3979c8}button:disabled{opacity:.5;cursor:wait}
-.approval{border:1px solid #a9782c;background:#302719;border-radius:10px;padding:14px}.approval button{margin:10px 8px 0 0}
-.small{font-size:12px;color:#9eacbd}pre{white-space:pre-wrap;overflow-wrap:anywhere}
+:root{color-scheme:dark;font:14px/1.5 "Segoe UI",Arial,sans-serif;background:#0b1220;color:#e8eef8;--panel:#111b2d;--panel2:#172338;--line:#26354c;--muted:#9eacc2;--accent:#65a8ff;--green:#72d6a1;--red:#ff8f8f;--amber:#f0c477}
+*{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;grid-template-columns:260px minmax(0,1fr)}
+aside{background:#0e1727;border-right:1px solid var(--line);padding:18px;display:flex;flex-direction:column;gap:16px}
+.brand{font-size:18px;font-weight:700}.muted,.hint{color:var(--muted);font-size:12px}
+label{display:block;color:var(--muted);font-size:12px;margin-bottom:6px}
+select,button,textarea{font:inherit;color:inherit;background:var(--panel2);border:1px solid var(--line);border-radius:9px;padding:10px}
+select{width:100%}button{cursor:pointer}button:hover{border-color:var(--accent)}button:disabled{opacity:.55;cursor:wait}
+.primary{background:#1d4f8d;border-color:#2c6cb5}.status{border:1px solid var(--line);border-radius:9px;padding:10px;color:var(--muted);font-size:12px;overflow-wrap:anywhere}
+.side-actions{margin-top:auto;display:grid;gap:8px}
+main{min-width:0;display:flex;flex-direction:column;height:100vh}
+header{padding:15px 22px;border-bottom:1px solid var(--line);display:flex;justify-content:space-between;align-items:center;gap:12px}
+#chat{flex:1;overflow:auto;padding:22px;display:flex;flex-direction:column;gap:14px}
+.msg{max-width:1000px;width:fit-content;border:1px solid var(--line);background:var(--panel);border-radius:12px;padding:13px 16px;white-space:pre-wrap;overflow-wrap:anywhere}
+.msg.user{align-self:flex-end;background:#173354}.msg.assistant{align-self:flex-start;width:min(100%,1000px)}
+.role{font-size:11px;color:var(--muted);margin-bottom:6px;text-transform:uppercase;letter-spacing:.08em}
+.activity{margin-top:12px;border:1px solid var(--line);border-radius:9px;overflow:hidden}
+.activity summary{cursor:pointer;padding:9px 11px;background:#0e1727;color:var(--muted);font-size:12px}
+.event{padding:9px 11px;border-top:1px solid var(--line);font-size:12px}
+.event-head{display:flex;justify-content:space-between;gap:12px;align-items:center}
+.event pre{white-space:pre-wrap;overflow-wrap:anywhere;max-height:240px;overflow:auto;color:var(--muted);margin:7px 0 0}
+.ok{color:var(--green)}.error{color:var(--red)}.pending{color:var(--amber)}
+.approval{margin-top:10px;padding:12px;border:1px solid #8a642b;background:#302719;border-radius:10px}
+.approval pre{white-space:pre-wrap;overflow-wrap:anywhere;max-height:220px;overflow:auto}
+.approval button{margin:8px 8px 0 0}
+.composer{border-top:1px solid var(--line);padding:14px 22px;background:#0e1727}
+form{display:flex;gap:10px;align-items:flex-end}textarea{flex:1;resize:vertical;min-height:58px;max-height:180px}
+.welcome{margin:auto;max-width:650px;text-align:center;color:var(--muted)}.welcome h2{color:var(--text)}
+@media(max-width:760px){body{grid-template-columns:1fr}aside{display:none}main{height:100vh}header{padding:12px}#chat{padding:12px}.composer{padding:12px}.msg{max-width:100%}}
 </style>
 </head>
 <body>
-<header><div><h1>NinjaOne Local AI Agent</h1><div class="sub">Local Foundry model · NinjaOne MCP gateway</div></div><div id="status">Discovering Foundry…</div></header>
+<aside>
+ <div><div class="brand">NinjaOne Expert</div><div class="muted">Local Foundry + NinjaOne MCP</div></div>
+ <div><label for="model">Local model</label><select id="model"><option value="">Discovering models…</option></select></div>
+ <div class="status" id="status">Checking local services…</div>
+ <button id="toolsBtn" type="button">Discover MCP tools</button>
+ <div class="hint">Read-only inventory is retrieved from the live NinjaOne API. Write operations require approval; DELETE remains blocked.</div>
+ <div class="side-actions"><button id="newBtn" type="button">New conversation</button><button id="clearBtn" type="button">Clear conversation</button></div>
+</aside>
 <main>
-<div class="toolbar"><label for="model">Model</label><select id="model"><option value="">Discovering models…</option></select><button id="refresh" type="button">Refresh</button></div>
-<div id="chat"><div class="msg assistant">Hello. Ask a question about your NinjaOne environment. Live data is retrieved through the local MCP gateway.</div></div>
-<form id="form"><textarea id="message" placeholder="Ask about organizations, devices, users, alerts…" required></textarea><button id="send">Send</button></form>
-<div class="small">Read operations run automatically. Write operations pause for approval. Destructive operations are blocked by default.</div>
+ <header><div><strong>IT Operations Assistant</strong><div class="muted">Inventory · Endpoint health · Policies · Alerts · Operations</div></div><div class="muted" id="modelTag">Local model</div></header>
+ <section id="chat"><div class="welcome"><h2>How can I help with NinjaOne?</h2><p>Ask about organizations, devices, technicians, users, alerts, patches, or request a deeper investigation.</p><p>Examples: “List all organizations” · “How many devices do we manage?” · “Investigate device 12345”</p></div></section>
+ <div class="composer"><form id="form"><textarea id="message" placeholder="Ask a NinjaOne question… (Enter to send, Shift+Enter for newline)" required></textarea><button class="primary" id="send" type="submit">Send</button></form><div class="hint" style="margin-top:7px">Tool calls and their results are shown under each response.</div></div>
 </main>
 <script>
-const chat=document.querySelector('#chat'), modelSelect=document.querySelector('#model'), statusEl=document.querySelector('#status');
-const history=[];
-function add(role,text){const el=document.createElement('div');el.className='msg '+role;el.textContent=text;chat.appendChild(el);chat.scrollTop=chat.scrollHeight;return el}
-async function load(){
- statusEl.textContent='Discovering Foundry endpoint…';
- try{
-  const [mr,tr]=await Promise.all([fetch('/api/models'),fetch('/api/tools')]);
-  const [m,t]=await Promise.all([mr.json(),tr.json()]);
-  if(!mr.ok)throw new Error(m.detail||'Foundry model discovery failed');
-  if(!tr.ok)throw new Error(t.detail||'NinjaOne MCP gateway is unavailable');
-  modelSelect.innerHTML='';
-  (m.models||[]).forEach(x=>{const o=document.createElement('option');o.value=x.id;o.textContent=x.id;modelSelect.appendChild(o)});
-  if(!m.models||!m.models.length){const o=document.createElement('option');o.value='';o.textContent='No loaded Foundry models';modelSelect.appendChild(o)}
-  statusEl.textContent='Ready · '+(t.count??0)+' MCP tools · '+(m.endpoint||'Foundry connected');
- }catch(e){statusEl.textContent='Connection issue · '+e.message;modelSelect.innerHTML='<option value="">Foundry unavailable</option>';}
-}
-async function send(){
- const input=document.querySelector('#message'), button=document.querySelector('#send'), text=input.value.trim();if(!text)return;
- input.value='';button.disabled=true;add('user',text);
- const pending=add('assistant','Working…');
- try{
-  const r=await fetch('/api/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message:text,model:modelSelect.value||null,history})});
-  const data=await r.json();if(!r.ok)throw new Error(data.detail||r.statusText);
-  pending.textContent=data.answer||'No answer returned.';
-  history.push({role:'user',content:text},{role:'assistant',content:pending.textContent});
-  (data.steps||[]).forEach(s=>{if(s.status==='error')pending.textContent+='\n\nTool error ('+s.tool+'): '+(s.error||'Unknown error')});
-  (data.pending_approvals||[]).forEach(p=>showApproval(p));
- }catch(e){pending.textContent='Error: '+e.message}
- finally{button.disabled=false;input.focus()}
-}
-function showApproval(p){
- const box=document.createElement('div');box.className='approval';
- const title=document.createElement('strong');title.textContent='Approval required: '+p.tool;box.appendChild(title);
- const details=document.createElement('pre');details.textContent=JSON.stringify(p.arguments,null,2);box.appendChild(details);
- const approve=document.createElement('button');approve.textContent='Approve and execute';
- const reject=document.createElement('button');reject.textContent='Reject';reject.style.background='#5a3940';
- async function resolve(approved){
-  approve.disabled=reject.disabled=true;
-  try{const r=await fetch('/api/approvals/'+encodeURIComponent(p.approval_id),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({approved})});const d=await r.json();if(!r.ok)throw new Error(d.detail||r.statusText);add('assistant',d.status==='executed'?'Operation completed. Tool result:\n'+JSON.stringify(d.result,null,2):d.message||d.status)}
-  catch(e){add('assistant','Approval error: '+e.message)}
-  box.remove()
- }
- approve.onclick=()=>resolve(true);reject.onclick=()=>resolve(false);box.append(approve,reject);chat.appendChild(box);
-}
-document.querySelector('#form').addEventListener('submit',e=>{e.preventDefault();send()});
-document.querySelector('#refresh').addEventListener('click',load);load();
+const chat=document.querySelector('#chat'),modelSelect=document.querySelector('#model'),statusEl=document.querySelector('#status'),input=document.querySelector('#message'),sendBtn=document.querySelector('#send');
+const history=[];let busy=false;
+function addMessage(role,text){const welcome=chat.querySelector('.welcome');if(welcome)welcome.remove();const el=document.createElement('article');el.className='msg '+role;const label=document.createElement('div');label.className='role';label.textContent=role==='user'?'You':'NinjaOne Agent';const body=document.createElement('div');body.textContent=text;el.append(label,body);chat.append(el);chat.scrollTop=chat.scrollHeight;return {el,body};}
+function addActivity(parent,steps){if(!steps||!steps.length)return;const box=document.createElement('details');box.className='activity';const summary=document.createElement('summary');summary.textContent='Tool activity · '+steps.length+' step(s)';box.append(summary);steps.forEach(step=>{const row=document.createElement('div');row.className='event';const head=document.createElement('div');head.className='event-head';const name=document.createElement('strong');name.textContent=step.tool||'MCP tool';const state=document.createElement('span');state.className=step.status==='completed'?'ok':step.status==='error'||step.status==='rejected'||step.status==='blocked'?'error':'pending';state.textContent=(step.status||'unknown').replaceAll('_',' ');head.append(name,state);row.append(head);const payload=step.error||step.message||step.result;if(payload!==undefined){const pre=document.createElement('pre');pre.textContent=typeof payload==='string'?payload:JSON.stringify(payload,null,2);row.append(pre);}box.append(row);});parent.append(box);}
+function showApproval(p){const box=document.createElement('div');box.className='approval';const title=document.createElement('strong');title.textContent='Approval required · '+p.tool;const details=document.createElement('pre');details.textContent=JSON.stringify(p.arguments,null,2);const approve=document.createElement('button');approve.textContent='Approve and execute';const reject=document.createElement('button');reject.textContent='Reject';box.append(title,details,approve,reject);async function resolve(approved){approve.disabled=reject.disabled=true;try{const r=await fetch('/api/approvals/'+encodeURIComponent(p.approval_id),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({approved})});const d=await r.json();if(!r.ok)throw new Error(d.detail||r.statusText);const msg=addMessage('assistant',d.status==='executed'?'Operation executed. Verify the resulting resource state.':d.message||d.status);if(d.result)addActivity(msg.el,[{tool:d.tool||p.tool,status:d.status,result:d.result}]);}catch(e){addMessage('assistant','Approval error: '+e.message);}box.remove();}approve.onclick=()=>resolve(true);reject.onclick=()=>resolve(false);chat.append(box);}
+async function load(){try{const [mr,tr]=await Promise.all([fetch('/api/models'),fetch('/api/tools')]);const [m,t]=await Promise.all([mr.json(),tr.json()]);if(!mr.ok)throw new Error(m.detail||'Foundry unavailable');modelSelect.innerHTML='';(m.models||[]).forEach(x=>{const o=document.createElement('option');o.value=x.id;o.textContent=x.id;modelSelect.append(o)});if(!m.models?.length)modelSelect.add(new Option('No loaded models',''));statusEl.textContent='Ready · '+(t.count??'?')+' MCP tools · '+(m.endpoint||'Foundry connected');updateModelTag();}catch(e){statusEl.textContent='Connection issue · '+e.message;}}
+function updateModelTag(){modelTag.textContent=modelSelect.selectedOptions[0]?.textContent||'No model';}
+async function send(){if(busy)return;const text=input.value.trim();if(!text)return;busy=true;sendBtn.disabled=true;addMessage('user',text);const pending=addMessage('assistant','Working…');input.value='';try{const r=await fetch('/api/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message:text,model:modelSelect.value||null,history})});const data=await r.json();if(!r.ok)throw new Error(data.detail||r.statusText);pending.body.textContent=data.answer||'No answer returned.';history.push({role:'user',content:text},{role:'assistant',content:pending.body.textContent});addActivity(pending.el,data.steps||[]);(data.pending_approvals||[]).forEach(showApproval);}catch(e){pending.body.textContent='Error: '+e.message;}finally{busy=false;sendBtn.disabled=false;input.focus();chat.scrollTop=chat.scrollHeight;}}
+document.querySelector('#form').addEventListener('submit',e=>{e.preventDefault();send();});
+input.addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();send();}});
+modelSelect.addEventListener('change',updateModelTag);
+document.querySelector('#toolsBtn').onclick=async()=>{try{const r=await fetch('/api/tools');const d=await r.json();addMessage('assistant','Discovered '+d.tools.length+' MCP tools:\\n'+d.tools.map(t=>'• '+t.name+' — '+t.description).join('\\n'));}catch(e){addMessage('assistant','Tool discovery failed: '+e.message);}};
+document.querySelector('#newBtn').onclick=()=>{history.length=0;chat.innerHTML='<div class="welcome"><h2>New conversation</h2><p>Start a new NinjaOne investigation.</p></div>';};
+document.querySelector('#clearBtn').onclick=()=>{history.length=0;chat.innerHTML='<div class="welcome"><h2>Conversation cleared</h2><p>Start a new NinjaOne investigation.</p></div>';};
+load();
 </script>
 </body>
 </html>
