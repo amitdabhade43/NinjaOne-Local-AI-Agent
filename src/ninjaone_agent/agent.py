@@ -236,6 +236,38 @@ def _direct_inventory_intent(message: str) -> dict[str, str] | None:
     return {"resource": matches[0], "operation": "count" if count else "list"}
 
 
+def _people_name_search_intent(message: str) -> str | None:
+    """Extract an explicit name filter for cross-category people searches."""
+    text = re.sub(r"\\s+", " ", (message or "")).strip()
+    patterns = (
+        r"\\b(?:with|whose)\\s+(?:first\\s+|last\\s+|full\\s+)?name\\s+(?:contains?|is|starts?\\s+with)\\s+['\"“]?([^'\"”?.!,;]+)",
+        r"\\b(?:users?|technicians?|contacts?|people)\\s+(?:named|called)\\s+['\"“]?([^'\"”?.!,;]+)",
+        r"\\bname\\s+contains?\\s+['\"“]?([^'\"”?.!,;]+)",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, text, flags=re.IGNORECASE)
+        if match:
+            name = match.group(1).strip().strip(" '\"“”")
+            if len(name) >= 2:
+                return name
+    return None
+
+
+def _record_matches_person_name(record: dict[str, Any], query: str) -> bool:
+    """Match a name against common NinjaOne person fields without guessing identity."""
+    first = str(record.get("firstName") or record.get("first_name") or "")
+    last = str(record.get("lastName") or record.get("last_name") or "")
+    values = (
+        first, last, (first + " " + last).strip(),
+        str(record.get("name") or ""),
+        str(record.get("displayName") or record.get("display_name") or ""),
+        str(record.get("username") or ""),
+        str(record.get("email") or ""),
+    )
+    needle = query.casefold()
+    return any(needle in value.casefold() for value in values if value)
+
+
 def _walk_json(value: Any):
     """Yield nested dictionaries/lists from parsed MCP output."""
     if isinstance(value, dict):
@@ -511,6 +543,111 @@ class NinjaOneAgent:
             answer = json.dumps(_tool_payloads(result), ensure_ascii=False, indent=2, default=str)
         return {"answer": answer, "steps": steps, "pending_approvals": []}
 
+    async def _run_people_name_search(
+        self, name: str, by_name: dict[str, dict[str, Any]]
+    ) -> dict[str, Any] | None:
+        """Search all exposed people collections and filter the live records by name."""
+        required = {"find_endpoint", "describe_endpoint", "call"}
+        if not required.issubset(by_name):
+            return None
+
+        categories = (
+            ("console users", "users"),
+            ("end users", "end users"),
+            ("technicians", "technicians"),
+            ("contacts", "contacts"),
+        )
+        steps: list[dict[str, Any]] = []
+        matches: list[dict[str, Any]] = []
+        searched: list[str] = []
+        unavailable: list[str] = []
+        seen: set[tuple[str, str]] = set()
+
+        for label, query in categories:
+            discovery_args = _tool_arguments(by_name["find_endpoint"], {"query": query})
+            if discovery_args is None:
+                unavailable.append(label)
+                continue
+            found = await self.gateway.call_tool("find_endpoint", discovery_args)
+            steps.append({"tool": "find_endpoint", "category": label,
+                          "status": "error" if _tool_failed(found) else "completed",
+                          "result": found})
+            if _tool_failed(found):
+                unavailable.append(label)
+                continue
+
+            candidate = _endpoint_candidate(found, query)
+            if not candidate:
+                unavailable.append(label)
+                continue
+            endpoint = candidate.get("endpoint") or (
+                f"{candidate.get('method')} {candidate.get('path')}"
+            )
+            inspect_args = _tool_arguments(
+                by_name["describe_endpoint"], {"endpoint": endpoint}
+            )
+            if inspect_args is None:
+                unavailable.append(label)
+                continue
+            inspected = await self.gateway.call_tool("describe_endpoint", inspect_args)
+            steps.append({"tool": "describe_endpoint", "category": label,
+                          "status": "error" if _tool_failed(inspected) else "completed",
+                          "result": inspected})
+            if _tool_failed(inspected):
+                unavailable.append(label)
+                continue
+
+            detail = _tool_result_object(inspected)
+            method = str(detail.get("method") or candidate.get("method") or "").upper()
+            path = detail.get("path") or candidate.get("path")
+            if method != "GET" or not isinstance(path, str) or not path.startswith("/") or "{" in path:
+                unavailable.append(label)
+                continue
+
+            call_args = _tool_arguments(by_name["call"], {
+                "endpoint": detail.get("endpoint") or endpoint,
+                "path_params": {}, "query": {}, "body": None,
+            })
+            if call_args is None:
+                unavailable.append(label)
+                continue
+            result = await self.gateway.call_tool("call", call_args)
+            steps.append({"tool": "call", "category": label,
+                          "status": "error" if _tool_failed(result) else "completed",
+                          "result": result})
+            if _tool_failed(result):
+                unavailable.append(label)
+                continue
+
+            searched.append(label)
+            for record in _inventory_records(result):
+                if not _record_matches_person_name(record, name):
+                    continue
+                record_copy = dict(record)
+                record_copy["matched_category"] = label
+                identity = str(record.get("id") or record.get("uid") or record.get("email") or "")
+                key = (label, identity or json.dumps(record, sort_keys=True, default=str))
+                if key not in seen:
+                    seen.add(key)
+                    matches.append(record_copy)
+
+        if not searched:
+            return {
+                "answer": "I could not retrieve any NinjaOne people collections, so I cannot confirm the name search. No operation was executed.",
+                "steps": steps, "pending_approvals": [],
+            }
+        if matches:
+            answer = (
+                f"Found {len(matches)} matching record(s) for '{name}' across the people categories retrieved: "
+                + ", ".join(searched) + ".\\n"
+                + "\\n".join(json.dumps(item, ensure_ascii=False, default=str) for item in matches)
+            )
+        else:
+            answer = f"No matching people records containing '{name}' were found in the retrieved categories: " + ", ".join(searched) + "."
+        if unavailable:
+            answer += " Search coverage is incomplete; these categories could not be queried: " + ", ".join(unavailable) + "."
+        return {"answer": answer, "steps": steps, "pending_approvals": []}
+
     async def _run_connected(self, message: str, model: str | None = None,
                              history: list[dict[str, str]] | None = None) -> dict[str, Any]:
         selected = self.foundry.resolve_model(model)
@@ -566,6 +703,14 @@ class NinjaOneAgent:
 
         # Fast path: simple inventory lists/counts use endpoint discovery + one GET
         # directly. Complex, filtered, and all write requests stay on the full agent path.
+        people_name = _people_name_search_intent(message)
+        if people_name and {"find_endpoint", "describe_endpoint", "call"}.issubset(tool_names):
+            logger.info("Using cross-category people name search for %r.", people_name)
+            people_result = await self._run_people_name_search(people_name, by_name)
+            if people_result is not None:
+                people_result["model"] = selected
+                return people_result
+
         direct_intent = _direct_inventory_intent(message)
         if direct_intent and {"find_endpoint", "describe_endpoint", "call"}.issubset(tool_names):
             logger.info("Using direct read-only inventory path for %s (%s).",
