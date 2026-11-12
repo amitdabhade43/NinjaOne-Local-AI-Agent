@@ -288,6 +288,14 @@ class NinjaOneAgent:
             item.get("content", "") for item in (history or [])[-4:]
             if item.get("role") in ("user", "assistant")
         )
+        live_request = _likely_live_request(prior_context + " " + message)
+        if live_request and not available:
+            return {
+                "model": selected,
+                "answer": "The NinjaOne MCP gateway is unavailable. No live tenant data was retrieved and no operation was executed.",
+                "steps": transcript if "transcript" in locals() else [],
+                "pending_approvals": [],
+            }
         skill_query = (prior_context + " " + message).strip()
         skill_context = render_skill_context(skill_query)
         if skill_context:
@@ -352,9 +360,7 @@ class NinjaOneAgent:
 
                     # Some models accept the tools parameter but emit neither native
                     # tool_calls nor Qwen markup. Ask for one explicit tool plan.
-                    if not parsed and not used_fallback and available and _likely_live_request(
-                        prior_context + " " + message
-                    ):
+                    if not parsed and not used_fallback and available and live_request:
                         tool_reference = json.dumps(
                             [{"name": t["name"], "description": t["description"],
                               "input_schema": t["input_schema"]} for t in available],
@@ -393,14 +399,13 @@ class NinjaOneAgent:
                             calls.append((parsed.get("tool_name") or parsed.get("name"),
                                           args if isinstance(args, dict) else {}, None))
                         else:
-                            safe_answer = _clean_model_content(content)
-                            if not safe_answer:
+                            if live_request:
                                 safe_answer = (
                                     "I couldn't execute a valid NinjaOne tool call for this request. "
-                                    "Please try again; no live tenant data was retrieved."
-                                    if available else
-                                    "The NinjaOne MCP gateway is unavailable, so I couldn't retrieve live tenant data."
+                                    "No live tenant data was retrieved and no operation was executed."
                                 )
+                            else:
+                                safe_answer = _clean_model_content(content) or "I couldn't generate a response."
                             return {"model": selected, "answer": safe_answer, "steps": transcript,
                                     "pending_approvals": []}
 
