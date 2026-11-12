@@ -12,11 +12,13 @@ def classify_tool(tool: dict[str, Any], arguments: dict[str, Any] | None = None)
     if method in ("POST", "PUT", "PATCH"):
         return "write"
 
+    name = str(tool.get("name", "")).lower()
+    if name == "memory_list":
+        return "read"
     if tool.get("destructive_hint") is True:
         return "destructive"
     if tool.get("read_only_hint") is True:
         return "read"
-    name = str(tool.get("name", "")).lower()
     description = str(tool.get("description", "")).lower()
     text = f"{name} {description}"
     if any(word in text for word in ("delete", "remove", "wipe", "uninstall", "retire", "destroy")):
