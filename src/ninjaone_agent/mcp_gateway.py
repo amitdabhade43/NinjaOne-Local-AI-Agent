@@ -43,34 +43,33 @@ class NinjaOneMCPGateway:
 
     @asynccontextmanager
     async def session(self) -> AsyncIterator[ClientSession]:
-        try:
-            if not self.gateway_dir.is_dir():
-                raise MCPGatewayError(
-                    f"Gateway directory was not found: {self.gateway_dir}"
-                )
-            if not self.python.is_file():
-                raise MCPGatewayError(
-                    f"Gateway Python executable was not found: {self.python}"
-                )
-
-            server = StdioServerParameters(
-                command=str(self.python),
-                args=["-m", "ninja_mcp"],
-                env=self._gateway_environment(),
-                cwd=str(self.gateway_dir),
+        if not self.gateway_dir.is_dir():
+            raise MCPGatewayError(
+                f"Gateway directory was not found: {self.gateway_dir}"
+            )
+        if not self.python.is_file():
+            raise MCPGatewayError(
+                f"Gateway Python executable was not found: {self.python}"
             )
 
-            async with stdio_client(server) as (read_stream, write_stream):
-                async with ClientSession(read_stream, write_stream) as session:
-                    await session.initialize()
-                    yield session
+        server = StdioServerParameters(
+            command=str(self.python),
+            args=["-m", "ninja_mcp"],
+            env=self._gateway_environment(),
+            cwd=str(self.gateway_dir),
+        )
 
-        except MCPGatewayError:
-            raise
-        except Exception as exc:
-            raise MCPGatewayError(
-                f"Could not connect to NinjaOne MCP gateway: {exc}"
-            ) from exc
+        # Do not catch exceptions raised by the caller while it is using the
+        # yielded session; only initialization failures are gateway failures.
+        async with stdio_client(server) as (read_stream, write_stream):
+            async with ClientSession(read_stream, write_stream) as session:
+                try:
+                    await session.initialize()
+                except Exception as exc:
+                    raise MCPGatewayError(
+                        f"Could not initialize NinjaOne MCP gateway: {exc}"
+                    ) from exc
+                yield session
 
     @asynccontextmanager
     async def connection(self) -> AsyncIterator[ClientSession]:
