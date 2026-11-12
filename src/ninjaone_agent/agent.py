@@ -179,7 +179,12 @@ class NinjaOneAgent:
 
         arguments = dict(pending["arguments"])
         context = pending.get("approval_context")
-        if context:
+        if not context:
+            return {
+                "status": "blocked",
+                "message": "This gateway write operation has no verified approval mapping. Nothing was executed.",
+            }
+        if context.get("inject_token"):
             try:
                 # The token is created only after the approval endpoint receives
                 # the human decision. It is never sent to the model.
@@ -191,11 +196,6 @@ class NinjaOneAgent:
                 )
             except ApprovalSigningError as exc:
                 return {"status": "blocked", "message": str(exc)}
-        else:
-            return {
-                "status": "blocked",
-                "message": "This gateway write operation has no verified approval-token mapping. Nothing was executed.",
-            }
 
         # Consume the approval ID immediately before the one permitted execution.
         self.pending.pop(approval_id, None)
@@ -399,24 +399,45 @@ class NinjaOneAgent:
                 approval_context = None
                 classification_arguments = dict(arguments)
 
-                if tool_name == "execute_endpoint":
+                if tool_name in {"execute_endpoint", "call"}:
                     endpoint_key = arguments.get("endpoint")
                     if not isinstance(endpoint_key, str):
                         transcript.append({"tool": tool_name, "status": "rejected",
                                            "error": "A discovered endpoint key is required."})
                         continue
                     try:
-                        inspected = await self.gateway.call_tool(
-                            "inspect_endpoint", {"endpoint": endpoint_key}
+                        describe_name = (
+                            "inspect_endpoint" if tool_name == "execute_endpoint"
+                            else "describe_endpoint"
                         )
-                        detail = _tool_result_object(inspected)
-                        method = str(detail.get("method") or "").upper()
-                        template = detail.get("path")
-                        if inspected.get("is_error") or method not in {"GET", "POST", "PUT", "PATCH"} or not isinstance(template, str):
-                            raise ValueError("Could not verify the endpoint method and path from inspect_endpoint.")
+                        if describe_name in by_name:
+                            inspected = await self.gateway.call_tool(
+                                describe_name, {"endpoint": endpoint_key}
+                            )
+                            detail = _tool_result_object(inspected)
+                        else:
+                            detail = {}
+
+                        # Legacy call() accepts "METHOD /path"; current
+                        # execute_endpoint() requires the inspected endpoint key.
+                        parts = endpoint_key.strip().split(None, 1)
+                        method = str(detail.get("method") or (
+                            parts[0] if len(parts) == 2 else ""
+                        )).upper()
+                        template = detail.get("path") or (
+                            parts[1] if len(parts) == 2 else None
+                        )
+                        if method not in {"GET", "POST", "PUT", "PATCH"} or not isinstance(template, str):
+                            raise ValueError("Could not verify the endpoint method and path.")
                         resolved = resolve_path(template, arguments.get("path_params") or {})
+                        supports_token = (
+                            "approval_token" in (tool.get("input_schema") or {}).get("properties", {})
+                        )
                         approval_context = {
-                            "method": method, "path": resolved, "body": arguments.get("body")
+                            "method": method,
+                            "path": resolved,
+                            "body": arguments.get("body"),
+                            "inject_token": tool_name == "execute_endpoint" or supports_token,
                         }
                         classification_arguments["http_method"] = method
                     except Exception as exc:
@@ -424,7 +445,7 @@ class NinjaOneAgent:
                                            "error": f"Endpoint inspection failed: {exc}"})
                         messages.append({"role": "system", "content": f"Do not execute {endpoint_key}; endpoint inspection failed: {exc}"})
                         continue
-                elif tool_name == "execute_raw_request":
+                elif tool_name in {"execute_raw_request", "raw_call"}:
                     raw_request = arguments.get("request", "")
                     parts = raw_request.strip().split(None, 1) if isinstance(raw_request, str) else []
                     if len(parts) != 2:
@@ -437,12 +458,21 @@ class NinjaOneAgent:
                         transcript.append({"tool": tool_name, "status": "rejected",
                                            "error": "Only supported relative NinjaOne API paths can be executed."})
                         continue
+                    supports_token = (
+                        "approval_token" in (tool.get("input_schema") or {}).get("properties", {})
+                    )
                     approval_context = {
-                        "method": method, "path": parsed_url.path, "body": arguments.get("body")
+                        "method": method,
+                        "path": parsed_url.path,
+                        "body": arguments.get("body"),
+                        "inject_token": tool_name == "execute_raw_request" or supports_token,
                     }
                     classification_arguments["http_method"] = method
                 elif tool_name == "execute_paginated_endpoint":
                     classification_arguments["http_method"] = "GET"
+                elif tool_name == "memory_save":
+                    # This changes local agent memory, not the NinjaOne tenant.
+                    approval_context = {"inject_token": False}
 
                 kind = classify_tool(tool, classification_arguments)
                 allowed, decision = approval_decision(
