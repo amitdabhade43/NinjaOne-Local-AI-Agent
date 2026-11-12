@@ -84,3 +84,14 @@ def test_catalog_exact_lookup_returns_only_requested_method(tmp_path):
     catalog = NinjaOneAPICatalog(path)
     assert catalog.get("/v2/users", "GET")["operation_id"] == "getUsers"
     assert catalog.get("/v2/users", "PATCH") is None
+
+
+def test_build_catalog_includes_fields_from_composed_schemas():
+    spec = sample_spec()
+    spec["components"]["schemas"]["UserList"]["allOf"] = [{
+        "type": "object",
+        "properties": {"invitationStatus": {"type": "string", "description": "Invite state"}},
+    }]
+    catalog = build_catalog(spec)
+    users = next(item for item in catalog["endpoints"] if item["path"] == "/v2/users")
+    assert "invitationStatus" in {field["name"] for field in users["response_fields"]}
