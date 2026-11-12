@@ -37,7 +37,11 @@ SYNONYMS = {
     "server": {"device", "devices"},
     "servers": {"device", "devices"},
     "offline": {"device", "devices", "status", "checkin"},
-    "stale": {"device", "devices", "checkin"},
+    "stale": {"device", "devices", "checkin", "checkins", "lastcontact", "lastseen"},
+    "check": {"checkin", "checkins", "lastcontact", "lastseen"},
+    "checks": {"checkin", "checkins", "lastcontact", "lastseen"},
+    "checkin": {"checkin", "checkins", "device", "devices", "status"},
+    "checkins": {"checkin", "checkins", "device", "devices", "status"},
     "reporting": {"device", "devices", "checkin", "status"},
     "reported": {"device", "devices", "checkin", "status"},
     "unreachable": {"device", "devices", "offline", "status"},
@@ -136,6 +140,21 @@ def load_relevant_skills(
         searchable = _tokens(f"{name.replace('-', ' ')} {description}")
         overlap = len(query_tokens & searchable)
         score = overlap * 3
+        # Give the matching operational domain a clear ranking advantage.
+        # Generic mentions of "device" inside other skills should not outrank
+        # the dedicated inventory skill for machine/check-in questions.
+        if name == "devices-inventory" and query_tokens & {
+            "machine", "machines", "pc", "pcs", "computer", "computers",
+            "endpoint", "endpoints", "laptop", "laptops", "server", "servers",
+            "offline", "stale", "check", "checks", "checkin", "checkins",
+            "lastcontact", "lastseen",
+        }:
+            score += 15
+        if name == "organizations-locations" and query_tokens & {
+            "customer", "customers", "org", "orgs", "organization",
+            "organizations", "site", "sites", "branch", "branches",
+        }:
+            score += 15
         if name in ALWAYS_LOAD:
             score += 1000
         if score > 0:
