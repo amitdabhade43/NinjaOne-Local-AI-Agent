@@ -83,9 +83,17 @@ def _field_details(schema: Any, prefix: str = "", depth: int = 0) -> list[dict[s
             nested = child
             if child.get("type") == "array" and isinstance(child.get("items"), dict):
                 nested = child["items"]
-            if isinstance(nested.get("properties"), dict):
+            if isinstance(nested.get("properties"), dict) or any(
+                isinstance(nested.get(key), list) for key in ("allOf", "oneOf", "anyOf")
+            ):
                 fields.extend(_field_details(nested, path, depth + 1))
-    return fields
+    # OpenAPI frequently composes response DTOs with allOf/oneOf/anyOf.
+    for composition in ("allOf", "oneOf", "anyOf"):
+        for part in schema.get(composition) or []:
+            fields.extend(_field_details(part, prefix, depth + 1))
+    # Keep the first occurrence when composed schemas repeat a field.
+    unique = {field["name"]: field for field in fields}
+    return list(unique.values())
 
 
 def _operation_fields(spec: dict[str, Any], operation: dict[str, Any]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
