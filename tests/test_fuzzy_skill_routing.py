@@ -5,6 +5,9 @@ from ninjaone_agent.skills import load_relevant_skills
 def test_fuzzy_machine_language_selects_device_skill():
     names = {item["name"] for item in load_relevant_skills("Which machines have stale check-ins?")}
     assert "devices-inventory" in names
+    assert "devices-inventory" in {
+        item["name"] for item in load_relevant_skills("Which computers have not checked in recently?")
+    }
 
 
 def test_fuzzy_customer_language_selects_organization_skill():
