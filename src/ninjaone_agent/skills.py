@@ -4,7 +4,9 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-DEFAULT_SKILLS_DIR = Path(__file__).resolve().parents[2] / "skills"
+DEFAULT_REPO_ROOT = Path(__file__).resolve().parents[2]
+DEFAULT_SKILLS_DIR = DEFAULT_REPO_ROOT / "skills"
+DEFAULT_AGENT_FILE = DEFAULT_REPO_ROOT / "agents" / "ninjaone-expert.md"
 ALWAYS_LOAD = {"ninjaone-api-discovery"}
 STOP_WORDS = {
     "a", "an", "and", "are", "all", "any", "can", "could", "do", "for",
@@ -78,6 +80,15 @@ def load_relevant_skills(
         results.append({"name": name, "description": description, "content": body})
         remaining -= len(body)
     return results
+
+
+def render_master_instructions(agent_file: Path | str | None = None) -> str:
+    """Load the master agent policy file, if present."""
+    path = Path(agent_file) if agent_file is not None else DEFAULT_AGENT_FILE
+    try:
+        return path.read_text(encoding="utf-8")
+    except OSError:
+        return ""
 
 
 def render_skill_context(query: str, skills_dir: Path | str | None = None) -> str:
