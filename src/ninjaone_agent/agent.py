@@ -12,21 +12,18 @@ logger = logging.getLogger(__name__)
 
 
 def _openai_tools(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    result = []
-    for tool in tools:
-        result.append({
-            "type": "function",
-            "function": {
-                "name": tool["name"],
-                "description": (tool.get("description") or tool["name"])[:4000],
-                "parameters": tool.get("input_schema") or {"type": "object", "properties": {}},
-            },
-        })
-    return result
+    return [{
+        "type": "function",
+        "function": {
+            "name": tool["name"],
+            "description": (tool.get("description") or tool["name"])[:4000],
+            "parameters": tool.get("input_schema") or {"type": "object", "properties": {}},
+        },
+    } for tool in tools]
 
 
 def _json_object(text: str) -> dict[str, Any] | None:
-    """Extract a JSON object from plain model output, including fenced output."""
+    """Extract a JSON object from plain or fenced model output."""
     text = text.strip()
     if text.startswith("```"):
         text = text.strip("`").replace("json", "", 1).strip()
@@ -45,6 +42,7 @@ class NinjaOneAgent:
         self.settings = settings
         self.foundry = FoundryClient(settings)
         self.gateway = NinjaOneMCPGateway(settings.ninjaone_mcp_url)
+        # Pending approvals are intentionally in-memory and expire on process restart.
         self.pending: dict[str, dict[str, Any]] = {}
 
     def models(self) -> list[dict[str, str]]:
@@ -59,12 +57,12 @@ class NinjaOneAgent:
             raise KeyError("Approval request was not found or has expired.")
         if not approved:
             return {"status": "rejected", "message": "The operation was not executed."}
-        tool = pending["tool"]
-        kind = classify_tool(tool)
+        kind = classify_tool(pending["tool"], pending["arguments"])
         if kind == "destructive" and not self.settings.allow_delete_operations:
             return {"status": "blocked", "message": "Destructive operations are disabled by configuration."}
         result = await self.gateway.call_tool(pending["tool_name"], pending["arguments"])
-        return {"status": "executed", "tool": pending["tool_name"], "result": result}
+        return {"status": "executed" if not result["is_error"] else "error",
+                "tool": pending["tool_name"], "result": result}
 
     async def run(self, message: str, model: str | None = None,
                   history: list[dict[str, str]] | None = None) -> dict[str, Any]:
@@ -90,55 +88,68 @@ class NinjaOneAgent:
 
         tool_specs = _openai_tools(available)
         transcript: list[dict[str, Any]] = []
-        for step in range(self.settings.max_agent_steps):
+        for _step in range(self.settings.max_agent_steps):
+            used_fallback = False
             try:
                 response = self.foundry.complete(model=selected, messages=messages, tools=tool_specs)
             except FoundryUnavailable:
-                # Fallback for runtimes/models that reject native function-calling parameters.
+                used_fallback = True
+                tool_reference = json.dumps(
+                    [{"name": t["name"], "description": t["description"],
+                      "input_schema": t["input_schema"]} for t in available],
+                    ensure_ascii=False,
+                )
                 response = self.foundry.complete(
                     model=selected,
                     messages=messages + [{
                         "role": "system",
                         "content": (
-                            "Native tool calling is unavailable. If a tool is needed, return ONLY JSON in this format: "
-                            '{"tool_name":"exact_name","arguments":{}}. Otherwise answer normally. '
-                            "Available tools: " + json.dumps(
-                                [{"name": t["name"], "description": t["description"],
-                                  "input_schema": t["input_schema"]} for t in available],
-                                ensure_ascii=False
-                            )
+                            "The model endpoint does not support native tool calling. If a tool is needed, return "
+                            "ONLY a JSON object like "
+                            '{"tool_name":"exact_name","arguments":{}}. If no tool is needed, answer in plain text. '
+                            "Available tools and schemas: " + tool_reference
                         ),
                     }],
                 )
 
             assistant = response.choices[0].message
             native_calls = getattr(assistant, "tool_calls", None) or []
+            calls: list[tuple[str, dict[str, Any], str | None]] = []
             if native_calls:
                 messages.append(assistant.model_dump(exclude_none=True))
-                calls = [(call.function.name, json.loads(call.function.arguments or "{}")) for call in native_calls]
+                for call in native_calls:
+                    try:
+                        args = json.loads(call.function.arguments or "{}")
+                    except json.JSONDecodeError:
+                        args = {}
+                    calls.append((call.function.name, args if isinstance(args, dict) else {}, call.id))
             else:
                 content = assistant.content or ""
-                parsed = _json_object(content)
+                parsed = _json_object(content) if used_fallback else None
                 if parsed and isinstance(parsed.get("tool_name"), str):
-                    calls = [(parsed["tool_name"], parsed.get("arguments") or {})]
+                    messages.append({"role": "assistant", "content": content})
+                    args = parsed.get("arguments") or {}
+                    calls.append((parsed["tool_name"], args if isinstance(args, dict) else {}, None))
                 else:
                     return {"model": selected, "answer": content, "steps": transcript,
                             "pending_approvals": []}
 
-            for tool_name, arguments in calls:
+            for tool_name, arguments, call_id in calls:
                 tool = by_name.get(tool_name)
                 if not tool:
                     transcript.append({"tool": tool_name, "status": "rejected", "error": "Unknown MCP tool name."})
-                    messages.append({"role": "system", "content": f"Tool {tool_name} does not exist. Choose from: {', '.join(by_name)}"})
+                    messages.append({"role": "system", "content": f"Tool {tool_name} does not exist. Available tools: {', '.join(by_name)}"})
                     continue
-                if not isinstance(arguments, dict):
-                    arguments = {}
-                allowed, decision = approval_decision(tool, self.settings.allow_delete_operations)
+
+                kind = classify_tool(tool, arguments)
+                allowed, decision = approval_decision(tool, self.settings.allow_delete_operations, arguments)
+                if kind == "write" and not self.settings.approval_required_for_writes:
+                    allowed, decision = True, "allowed"
                 if not allowed:
                     if decision == "blocked":
                         transcript.append({"tool": tool_name, "status": "blocked",
                                            "message": "Destructive operation is disabled by configuration."})
-                        messages.append({"role": "system", "content": f"{tool_name} is blocked by the safety policy. Do not retry it."})
+                        messages.append({"role": "system", "content": f"{tool_name} is blocked by policy. Do not retry it."})
                         continue
                     approval_id = str(uuid.uuid4())
                     self.pending[approval_id] = {"tool": tool, "tool_name": tool_name, "arguments": arguments}
@@ -148,14 +159,18 @@ class NinjaOneAgent:
                         "answer": "This request requires approval before the operation can run.",
                         "steps": transcript,
                         "pending_approvals": [{"approval_id": approval_id, "tool": tool_name,
-                                               "arguments": arguments, "risk": classify_tool(tool)}],
+                                               "arguments": arguments, "risk": kind}],
                     }
+
                 try:
                     result = await self.gateway.call_tool(tool_name, arguments)
                     transcript.append({"tool": tool_name, "status": "error" if result["is_error"] else "completed",
                                        "result": result})
-                    messages.append({"role": "tool", "tool_call_id": getattr(native_calls[0], "id", "fallback"),
-                                     "content": json.dumps(result, ensure_ascii=False, default=str)})
+                    tool_text = json.dumps(result, ensure_ascii=False, default=str)
+                    if call_id:
+                        messages.append({"role": "tool", "tool_call_id": call_id, "content": tool_text})
+                    else:
+                        messages.append({"role": "user", "content": f"Tool result for {tool_name}: {tool_text}"})
                 except Exception as exc:
                     logger.exception("MCP tool execution failed: %s", tool_name)
                     transcript.append({"tool": tool_name, "status": "error", "error": str(exc)})
