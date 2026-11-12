@@ -284,7 +284,12 @@ class NinjaOneAgent:
         master_instructions = render_master_instructions()
         if master_instructions:
             system_text += "\n\n" + master_instructions
-        skill_context = render_skill_context(message)
+        prior_context = " ".join(
+            item.get("content", "") for item in (history or [])[-4:]
+            if item.get("role") in ("user", "assistant")
+        )
+        skill_query = (prior_context + " " + message).strip()
+        skill_context = render_skill_context(skill_query)
         if skill_context:
             system_text += "\n\n" + skill_context
         messages: list[dict[str, Any]] = [{"role": "system", "content": system_text}]
@@ -295,6 +300,7 @@ class NinjaOneAgent:
 
         tool_specs = _openai_tools(available)
         transcript: list[dict[str, Any]] = []
+        endpoint_details: dict[str, dict[str, Any]] = {}
         for _step in range(self.settings.max_agent_steps):
             used_fallback = False
             try:
@@ -346,7 +352,9 @@ class NinjaOneAgent:
 
                     # Some models accept the tools parameter but emit neither native
                     # tool_calls nor Qwen markup. Ask for one explicit tool plan.
-                    if not parsed and not used_fallback and available and _likely_live_request(message):
+                    if not parsed and not used_fallback and available and _likely_live_request(
+                        prior_context + " " + message
+                    ):
                         tool_reference = json.dumps(
                             [{"name": t["name"], "description": t["description"],
                               "input_schema": t["input_schema"]} for t in available],
@@ -435,13 +443,12 @@ class NinjaOneAgent:
                             "inspect_endpoint" if tool_name == "execute_endpoint"
                             else "describe_endpoint"
                         )
-                        if describe_name in by_name:
+                        detail = endpoint_details.get(endpoint_key, {})
+                        if not detail and describe_name in by_name:
                             inspected = await self.gateway.call_tool(
                                 describe_name, {"endpoint": endpoint_key}
                             )
                             detail = _tool_result_object(inspected)
-                        else:
-                            detail = {}
 
                         # Legacy call() accepts "METHOD /path"; current
                         # execute_endpoint() requires the inspected endpoint key.
@@ -533,6 +540,11 @@ class NinjaOneAgent:
 
                 try:
                     result = await self.gateway.call_tool(tool_name, arguments)
+                    if tool_name in {"inspect_endpoint", "describe_endpoint"}:
+                        inspected_key = arguments.get("endpoint")
+                        inspected_data = _tool_result_object(result)
+                        if isinstance(inspected_key, str) and inspected_data and not _tool_failed(result):
+                            endpoint_details[inspected_key] = inspected_data
                     transcript.append({"tool": tool_name, "status": "error" if _tool_failed(result) else "completed",
                                        "result": result})
                     tool_text = json.dumps(result, ensure_ascii=False, default=str)
