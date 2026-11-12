@@ -166,10 +166,11 @@ class NinjaOneAgent:
         return await self.gateway.list_tools()
 
     async def approve(self, approval_id: str, approved: bool) -> dict[str, Any]:
-        pending = self.pending.pop(approval_id, None)
+        pending = self.pending.get(approval_id)
         if not pending:
             raise KeyError("Approval request was not found or has expired.")
         if not approved:
+            self.pending.pop(approval_id, None)
             return {"status": "rejected", "message": "The operation was not executed."}
 
         kind = pending.get("kind", "write")
@@ -196,6 +197,8 @@ class NinjaOneAgent:
                 "message": "This gateway write operation has no verified approval-token mapping. Nothing was executed.",
             }
 
+        # Consume the approval ID immediately before the one permitted execution.
+        self.pending.pop(approval_id, None)
         result = await self.gateway.call_tool(pending["tool_name"], arguments)
         return {
             "status": "executed" if not result["is_error"] else "error",
