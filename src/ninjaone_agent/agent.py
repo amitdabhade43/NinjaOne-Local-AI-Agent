@@ -825,8 +825,10 @@ class NinjaOneAgent:
         total = _inventory_total(result)
 
         if intent["operation"] == "count":
-            if not complete and total is None:
+            if not complete and total is None and records:
                 answer = f"NinjaOne returned at least {len(records)} {resource} record(s); the response was incomplete, so this is not a verified total."
+            elif not complete and total is None:
+                answer = f"The NinjaOne {resource} response was truncated and did not include a verifiable total. I cannot confirm the count."
             else:
                 answer = f"NinjaOne returned {total if total is not None else len(records)} {resource} record(s)."
         elif records:
@@ -1498,6 +1500,17 @@ class NinjaOneAgent:
                 except Exception as exc:
                     logger.exception("MCP tool execution failed: %s", tool_name)
                     transcript.append({"tool": tool_name, "status": "error", "error": str(exc)})
+                    if isinstance(exc, MCPGatewayError):
+                        return {
+                            "model": selected,
+                            "answer": (
+                                f"The NinjaOne MCP gateway failed while executing {tool_name}: {exc} "
+                                "I stopped this turn rather than retrying against a potentially broken session. "
+                                "No further tool calls were attempted."
+                            ),
+                            "steps": transcript,
+                            "pending_approvals": [],
+                        }
                     messages.append({"role": "system", "content": f"Tool {tool_name} failed: {exc}. Explain the failure; do not fabricate results."})
 
         final = await asyncio.to_thread(
