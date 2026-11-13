@@ -19,10 +19,12 @@ class ChatRequest(BaseModel):
     message: str = Field(min_length=1, max_length=20000)
     model: str | None = None
     history: list[dict[str, str]] = Field(default_factory=list)
+    session_id: str = Field(min_length=16, max_length=128)
 
 
 class ApprovalRequest(BaseModel):
     approved: bool
+    session_id: str = Field(min_length=16, max_length=128)
 
 
 @app.get("/")
@@ -57,7 +59,9 @@ async def tools() -> dict[str, object]:
 @app.post("/api/chat")
 async def chat(request: ChatRequest) -> dict[str, object]:
     try:
-        return await agent.run(request.message, request.model, request.history)
+        return await agent.run(
+            request.message, request.model, request.history, request.session_id
+        )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except (FoundryUnavailable, MCPGatewayError) as exc:
@@ -69,7 +73,7 @@ async def chat(request: ChatRequest) -> dict[str, object]:
 @app.post("/api/approvals/{approval_id}")
 async def resolve_approval(approval_id: str, request: ApprovalRequest) -> dict[str, object]:
     try:
-        return await agent.approve(approval_id, request.approved)
+        return await agent.approve(approval_id, request.approved, request.session_id)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except MCPGatewayError as exc:
