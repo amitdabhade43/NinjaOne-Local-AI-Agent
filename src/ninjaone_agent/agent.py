@@ -1000,6 +1000,237 @@ class NinjaOneAgent:
             answer += " Search coverage is incomplete; these categories could not be queried: " + ", ".join(unavailable) + "."
         return {"answer": answer, "steps": steps, "pending_approvals": []}
 
+    async def _run_schema_collection(
+        self, endpoint: str, category: str, by_name: dict[str, dict[str, Any]],
+        steps: list[dict[str, Any]],
+    ) -> tuple[dict[str, Any] | None, bool]:
+        """Inspect and execute one documented GET collection, paginating only when declared."""
+        inspect_tool = by_name.get("inspect_endpoint")
+        execute_tool = by_name.get("execute_endpoint")
+        if not inspect_tool or not execute_tool:
+            return None, False
+        inspect_args = _tool_arguments(inspect_tool, {"endpoint": endpoint})
+        if inspect_args is None:
+            return None, False
+        inspected = await self.gateway.call_tool("inspect_endpoint", inspect_args)
+        steps.append({"tool": "inspect_endpoint", "category": category,
+                      "status": "error" if _tool_failed(inspected) else "completed",
+                      "result": inspected})
+        if _tool_failed(inspected):
+            return None, False
+        detail = _tool_result_object(inspected)
+        if str(detail.get("method") or "").upper() != "GET":
+            return None, False
+        path = detail.get("path")
+        if not isinstance(path, str) or not path.startswith("/") or "{" in path:
+            return None, False
+
+        args = _tool_arguments(execute_tool, {
+            "endpoint": endpoint, "path_params": {}, "query": {}, "body": None,
+        })
+        if args is None:
+            return None, False
+        result = await self.gateway.call_tool("execute_endpoint", args)
+        steps.append({"tool": "execute_endpoint", "category": category,
+                      "status": "error" if _tool_failed(result) else "completed",
+                      "result": result})
+        if _tool_failed(result):
+            return result, False
+
+        envelope = _tool_result_object(result)
+        incomplete = envelope.get("complete") is False or envelope.get("truncated") is True
+        if not incomplete:
+            return result, True
+
+        # The gateway's pagination tool is deliberately schema-driven. Never guess
+        # page parameter names or the array location in a response.
+        paginate_tool = by_name.get("execute_paginated_endpoint")
+        parameters = detail.get("parameters") or []
+        query_names = {
+            str(item.get("name")) for item in parameters
+            if isinstance(item, dict) and item.get("in") == "query"
+        }
+        page_name = next((name for name in ("page", "pageNumber") if name in query_names), None)
+        size_name = next((name for name in ("pageSize", "page_size", "perPage") if name in query_names), None)
+        response_names = {
+            str(item.get("name", "")).split(".", 1)[0]
+            for item in (self.api_catalog.get(path, method="GET") or {}).get("response_fields", [])
+            if isinstance(item, dict)
+        }
+        result_path = next((name for name in ("items", "results", "data", "records")
+                            if name in response_names), None)
+        if not paginate_tool or not page_name or not size_name or not result_path:
+            return result, False
+        page_args = _tool_arguments(paginate_tool, {
+            "endpoint": endpoint, "path_params": {}, "query": {},
+            "page_parameter": page_name, "page_size_parameter": size_name,
+            "page_size": 100, "start_page": 1, "max_pages": 20,
+            "result_path": result_path,
+        })
+        if page_args is None:
+            return result, False
+        paged = await self.gateway.call_tool("execute_paginated_endpoint", page_args)
+        steps.append({"tool": "execute_paginated_endpoint", "category": category,
+                      "status": "error" if _tool_failed(paged) else "completed",
+                      "result": paged})
+        if _tool_failed(paged):
+            return result, False
+        paged_envelope = _tool_result_object(paged)
+        return paged, paged_envelope.get("complete") is True
+
+    async def _run_schema_people_name_search(
+        self, name: str, by_name: dict[str, dict[str, Any]], model: str,
+    ) -> dict[str, Any] | None:
+        """Search documented NinjaOne people collections through the schema-driven gateway."""
+        if not {"inspect_endpoint", "execute_endpoint"}.issubset(by_name):
+            return None
+        collections = (
+            ("console users", "/v2/users"),
+            ("end users", "/v2/user/end-users"),
+            ("technicians", "/v2/user/technicians"),
+            ("contacts", "/v2/user/contacts"),
+        )
+        steps: list[dict[str, Any]] = []
+        matches: list[dict[str, Any]] = []
+        seen: set[tuple[str, str]] = set()
+        searched: list[str] = []
+        incomplete: list[str] = []
+        unavailable: list[str] = []
+
+        for category, path in collections:
+            route = self.api_catalog.get(path, method="GET")
+            endpoint = f"GET {path}" if route else None
+            if not endpoint and "discover_endpoints" in by_name:
+                discovery_args = _tool_arguments(by_name["discover_endpoints"], {
+                    "intent": f"List all {category} collection records",
+                    "category": None, "method": "GET", "candidate_limit": 30,
+                })
+                if discovery_args is not None:
+                    found = await self.gateway.call_tool("discover_endpoints", discovery_args)
+                    steps.append({"tool": "discover_endpoints", "category": category,
+                                  "status": "error" if _tool_failed(found) else "completed",
+                                  "result": found})
+                    candidate = _endpoint_candidate(found, category) if not _tool_failed(found) else None
+                    candidate_path = str((candidate or {}).get("path") or "")
+                    if candidate and candidate_path.rstrip("/").split("/")[-1].casefold() in {
+                        "users", "end-users", "technicians", "contacts"
+                    } and "{" not in candidate_path:
+                        endpoint = f"GET {candidate_path}"
+            if not endpoint:
+                unavailable.append(category + " (collection route not found in API catalogue)")
+                continue
+
+            result, complete = await self._run_schema_collection(endpoint, category, by_name, steps)
+            if result is None or _tool_failed(result):
+                unavailable.append(category)
+                continue
+            searched.append(category)
+            if not complete:
+                incomplete.append(category)
+            records = _inventory_records(result)
+            for record in records:
+                if not _record_matches_person_name(record, name):
+                    continue
+                item = dict(record)
+                item["matched_category"] = category
+                email = str(record.get("email") or "").strip().casefold()
+                uid = str(record.get("uid") or "").strip().casefold()
+                # Email/UID are cross-category identity keys. Without either, retain
+                # category in the key because numeric IDs can collide between APIs.
+                identity = email or uid
+                fallback_id = str(record.get("id") or record.get("userId") or "")
+                key = (identity or f"{category}:{fallback_id}", str(record.get("organizationId") or ""))
+                if key not in seen:
+                    seen.add(key)
+                    matches.append(item)
+
+        if not searched:
+            return {
+                "model": model,
+                "answer": "I could not retrieve any NinjaOne people collections, so I cannot confirm this name search. No operation was executed.",
+                "steps": steps, "pending_approvals": [],
+            }
+        if matches:
+            answer = _format_people_directory(matches, name)
+        elif incomplete:
+            answer = (
+                f"No matching '{name}' record was found in the retrieved portion of the people directory, "
+                "but the search was incomplete because pagination did not finish."
+            )
+        else:
+            answer = f"No matching people records containing '{name}' were found in the retrieved categories: " + ", ".join(searched) + "."
+        if incomplete:
+            answer += " Pagination was incomplete for: " + ", ".join(incomplete) + "."
+        if unavailable:
+            answer += " These categories could not be queried: " + ", ".join(unavailable) + "."
+        return {"model": model, "answer": answer, "steps": steps, "pending_approvals": []}
+
+    async def _run_schema_person_device_access(
+        self, name: str, by_name: dict[str, dict[str, Any]], model: str,
+    ) -> dict[str, Any] | None:
+        """Count accessibleDeviceIds for one unambiguous end-user account."""
+        route = self.api_catalog.get("/v2/user/end-users", method="GET")
+        if not route or not {"inspect_endpoint", "execute_endpoint"}.issubset(by_name):
+            return None
+        fields = {str(item.get("name")) for item in route.get("response_fields", [])
+                  if isinstance(item, dict)}
+        if "accessibleDeviceIds" not in fields:
+            logger.warning("Device-access fast path skipped: accessibleDeviceIds is not documented.")
+            return None
+        steps: list[dict[str, Any]] = []
+        result, complete = await self._run_schema_collection(
+            "GET /v2/user/end-users", "end users", by_name, steps
+        )
+        if result is None or _tool_failed(result):
+            return {"model": model,
+                    "answer": "NinjaOne could not retrieve the end-user directory. I cannot confirm this user's device access.",
+                    "steps": steps, "pending_approvals": []}
+        matches = [record for record in _inventory_records(result)
+                   if _record_matches_person_name(record, name)]
+        unique: dict[str, dict[str, Any]] = {}
+        for record in matches:
+            email = str(record.get("email") or "").strip().casefold()
+            uid = str(record.get("uid") or "").strip().casefold()
+            identity = email or uid or str(record.get("id") or json.dumps(record, sort_keys=True, default=str))
+            unique.setdefault(identity, record)
+        if len(unique) > 1:
+            choices = [
+                f"- {item.get('firstName', '')} {item.get('lastName', '')} — {item.get('email', 'email unavailable')}"
+                for item in unique.values()
+            ]
+            answer = f"More than one end-user account matches '{name}'. Please specify which account:\n" + "\n".join(choices)
+        elif not unique:
+            answer = (
+                f"No end-user account matching '{name}' was found in the retrieved directory."
+                if complete else
+                f"No matching account was found in the retrieved portion of the directory; pagination was incomplete."
+            )
+        else:
+            person = next(iter(unique.values()))
+            accessible = person.get("accessibleDeviceIds")
+            if accessible is None:
+                accessible = person.get("deviceIds")
+            if not isinstance(accessible, list):
+                answer = (
+                    f"I found {person.get('firstName', '')} {person.get('lastName', '')}, "
+                    "but NinjaOne did not return an accessible-device list, so I cannot calculate the count."
+                )
+            else:
+                device_ids = {str(value) for value in accessible if value is not None}
+                assigned = person.get("assignedDeviceIds")
+                assigned_count = len({str(value) for value in assigned if value is not None}) if isinstance(assigned, list) else None
+                answer = (
+                    f"**{person.get('firstName', '')} {person.get('lastName', '')}** "
+                    f"({person.get('email', 'email unavailable')}) can access **{len(device_ids)} device(s)**."
+                )
+                if assigned_count is not None:
+                    answer += f" Assigned devices: **{assigned_count}**."
+                if person.get("fullPortalAccess") is True:
+                    answer += " The account also has full portal access."
+        if not complete:
+            answer += " Note: the end-user collection pagination was incomplete."
+        return {"model": model, "answer": answer, "steps": steps, "pending_approvals": []}
+
     async def _run_person_device_access(
         self, name: str, by_name: dict[str, dict[str, Any]], model: str
     ) -> dict[str, Any] | None:
@@ -1169,8 +1400,13 @@ class NinjaOneAgent:
 
         # Fast path: a named person's device-access count is a single catalogue-backed GET.
         device_access_name = _device_access_name_intent(message)
+        if device_access_name and {"inspect_endpoint", "execute_endpoint"}.issubset(tool_names):
+            logger.info("Using schema-driven end-user device-access lookup for %r.", device_access_name)
+            access_result = await self._run_schema_person_device_access(device_access_name, by_name, selected)
+            if access_result is not None:
+                return access_result
         if device_access_name and "call" in by_name:
-            logger.info("Using catalogue-backed end-user device-access lookup for %r.", device_access_name)
+            logger.info("Using legacy end-user device-access lookup for %r.", device_access_name)
             access_result = await self._run_person_device_access(device_access_name, by_name, selected)
             if access_result is not None:
                 return access_result
@@ -1178,8 +1414,13 @@ class NinjaOneAgent:
         # Fast path: simple inventory lists/counts use endpoint discovery + one GET
         # directly. Complex, filtered, and all write requests stay on the full agent path.
         people_name = _people_name_search_intent(message)
+        if people_name and {"inspect_endpoint", "execute_endpoint"}.issubset(tool_names):
+            logger.info("Using schema-driven cross-category people search for %r.", people_name)
+            people_result = await self._run_schema_people_name_search(people_name, by_name, selected)
+            if people_result is not None:
+                return people_result
         if people_name and {"find_endpoint", "describe_endpoint", "call"}.issubset(tool_names):
-            logger.info("Using cross-category people name search for %r.", people_name)
+            logger.info("Using legacy cross-category people name search for %r.", people_name)
             people_result = await self._run_people_name_search(people_name, by_name, selected)
             if people_result is not None:
                 people_result["model"] = selected
