@@ -36,10 +36,10 @@ NinjaOne Public API v2
 - POST/PUT/PATCH operations require explicit approval. When the MCP tool schema exposes the gateway HMAC approval_token, the backend signs the exact method, resolved path, and request-body hash after approval; legacy tools without that parameter remain protected by the agent approval gate and cannot receive an injected unknown argument.
 - DELETE is blocked by the gateway and is not enabled by this agent.
 - The agent supports the current schema-driven gateway tools and includes prompt guidance for the legacy endpoint-discovery tool names.
-- Explicit people-name searches use a deterministic read-only path that attempts the documented collection endpoints for console users, end users, technicians, and contacts, filters returned records case-insensitively, and reports categories that could not be searched or where a reported total indicates pagination is still required.
-- Structured people and simple inventory results are formatted by the selected local Foundry model into readable Markdown (headings, counts, numbered records, readable field labels). The formatter receives verified API records only, has no tools, and is instructed not to invent or change values; a deterministic Markdown formatter is used if the model fails or the result is too large. Raw JSON is not the normal user-facing presentation.
+- Explicit people-name searches use deterministic cross-category read-only execution for both the schema-driven gateway and the legacy gateway. The schema-driven path inspects and executes documented GET collections for console users, end users, technicians, and contacts; it deduplicates by stable account identity and reports incomplete category coverage rather than claiming a complete search.
+- Simple inventory and legacy people-search results use deterministic Markdown formatting from verified API records, avoiding an extra model generation for routine lists and counts. Raw JSON is not the normal user-facing presentation.
 - If a live NinjaOne request stalls during tool planning, the agent makes a clarification-only model call and asks a focused question based on the conversation and discovery results instead of returning a generic tool-call failure. Clarification is never treated as write approval.
-- Simple inventory list/count questions use a deterministic read-only fast path when the connected gateway exposes the legacy `find_endpoint`, `describe_endpoint`, and `call` tools. It supports common synonyms and high-confidence resource-name typo correction, ranks discovered GET endpoints against the requested resource, and calls the selected endpoint without model planning/finalization. Filtered, investigative, write, ambiguous, and unsupported requests stay on the normal agent workflow.
+- Simple inventory list/count questions and supported people-directory searches use deterministic read-only fast paths for both the current schema-driven gateway (`inspect_endpoint` + `execute_endpoint`, using exact OpenAPI collection routes) and the legacy `find_endpoint`, `describe_endpoint`, and `call` tools. When a response is truncated, people collection retrieval uses `execute_paginated_endpoint` only when the inspected OpenAPI schema declares compatible page/page-size parameters and a known result array; otherwise it reports incomplete coverage. It supports common synonyms and high-confidence resource-name typo correction, ranks discovered GET endpoints against the requested resource, and calls the selected endpoint without model planning/finalization. Filtered, investigative, write, ambiguous, and unsupported requests stay on the normal agent workflow.
 - MCP tool schemas are cached briefly (30 seconds) and verified GET endpoint metadata is cached for 15 minutes. Only metadata is cached; live NinjaOne response data is fetched on every request. Both caches are bounded and expire automatically.
 - A local OpenAPI catalogue indexes NinjaOne API v2 operations, descriptions, parameters, request fields, and response fields. Relevant entries are added to model context on demand; exact collection routes can bypass repeated endpoint discovery. It contains documentation only, never tenant records.
 - The browser chat shows each completed MCP step, its status, and returned result in a collapsible activity timeline. Activity is displayed when the response completes; it is not token-by-token/live streaming.
@@ -60,6 +60,7 @@ Current skill areas:
 - Automation and scripts
 - Device operations
 - Reports and compliance
+- Multi-step operations workflows: alert investigation, root-cause analysis, fleet health audits, patch history and approval-gated remediation
 - Backup, IT asset management, knowledge and access
 
 The loader always includes API-discovery guidance and loads only the best matching domain skills for each request. It does not load every skill on every turn. Retrieval combines the existing synonym/typo-aware lexical router with a local SQLite FTS5 index over each skill's name, description, and full Markdown body. The FTS index is held in process memory and rebuilt automatically when a skill file changes; if SQLite was built without FTS5, the lexical router remains available.
@@ -122,7 +123,7 @@ Run this once after pulling the repository, and repeat it when NinjaOne publishe
 .\.venv\Scripts\python.exe .\scripts\sync_ninjaone_api_catalog.py
 ~~~
 
-The script downloads the official EU NinjaOne Public API v2 OpenAPI JSON and creates `data\ninjaone_api_catalog.json`. The generated file is local and ignored by Git. It includes endpoint summaries, parameter definitions, request-body fields, and response fields. The agent loads it at startup; restart the agent after refreshing it. If the catalogue is absent or invalid, the agent safely falls back to the existing MCP endpoint discovery.
+The script downloads the official NinjaOne Public API v2 OpenAPI JSON from `app.ninjarmm.com` and creates `data\ninjaone_api_catalog.json`. The generated file is local and ignored by Git. It includes endpoint summaries, parameter definitions, request-body fields, and response fields. The agent loads it at startup; restart the agent after refreshing it. If the catalogue is absent or invalid, the agent safely falls back to the existing MCP endpoint discovery.
 
 ### Configure the gateway
 
@@ -132,7 +133,15 @@ C:\project\NinjaRMM-API-Gateway-MCP\.env
 
 When the active MCP tool schema exposes the gateway HMAC approval_token, the approval secret must be the same secret configured for the gateway's HMAC verifier. The agent reads it from the gateway environment file only inside the trusted backend when an approval is accepted. Legacy tool schemas without an approval_token parameter use the agent-side human approval gate and do not receive an extra argument. Never put the secret in a prompt, model context, browser JavaScript, chat history, or Git.
 
-The gateway must have its own dependencies installed in its own virtual environment. The agent starts it with:
+Before starting the gateway, install its dependencies and download the full OpenAPI source once from the gateway repository root:
+
+~~~powershell
+Set-Location C:\project\NinjaRMM-API-Gateway-MCP
+.\.venv\Scripts\python.exe -m pip install -e ".[dev]"
+.\.venv\Scripts\python.exe .\scripts\sync_openapi_spec.py
+~~~
+
+The gateway repository intentionally does not commit this generated JSON. The agent starts it with:
 
 ~~~powershell
 C:\project\NinjaRMM-API-Gateway-MCP\.venv\Scripts\python.exe -m ninja_mcp
@@ -162,7 +171,10 @@ Invoke-RestMethod http://127.0.0.1:8080/api/tools
 Basic live-data test:
 
 ~~~powershell
-$body = @{ message = "List all NinjaOne organizations and show their names and IDs." } | ConvertTo-Json -Depth 10
+$body = @{
+    message = "How many organizations are in NinjaOne?"
+    session_id = [guid]::NewGuid().ToString()
+} | ConvertTo-Json -Depth 10
 $response = Invoke-RestMethod -Uri "http://127.0.0.1:8080/api/chat" -Method Post -ContentType "application/json" -Body $body
 $response | ConvertTo-Json -Depth 20
 ~~~
@@ -189,7 +201,7 @@ DELETE is not supported. If the approval secret is missing or the operation cann
 | GET | /health | Agent process health |
 | GET | /api/models | Dynamic Foundry model discovery |
 | GET | /api/tools | Dynamic MCP tool discovery |
-| POST | /api/chat | Agent request with optional model and history |
+| POST | /api/chat | Agent request with required conversation session ID and optional model/history |
 | POST | /api/approvals/{approval_id} | Approve or reject a pending write |
 
 ## Tests

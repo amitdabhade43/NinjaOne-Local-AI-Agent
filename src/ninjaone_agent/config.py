@@ -35,6 +35,9 @@ class Settings(BaseSettings):
 
     max_agent_steps: int = 6
     request_timeout_seconds: int = 90
+    # Bound MCP startup, discovery, and individual tool calls so a stalled gateway
+    # cannot leave a browser request waiting indefinitely.
+    mcp_operation_timeout_seconds: int = 180
     approval_required_for_writes: bool = True
     allow_delete_operations: bool = False
 

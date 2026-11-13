@@ -1,4 +1,7 @@
+import asyncio
+import logging
 import os
+import time
 from contextlib import asynccontextmanager
 from contextvars import ContextVar
 from pathlib import Path
@@ -9,6 +12,8 @@ from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
 from ninjaone_agent.config import Settings
+
+logger = logging.getLogger(__name__)
 
 
 class MCPGatewayError(RuntimeError):
@@ -22,6 +27,9 @@ class NinjaOneMCPGateway:
         self.gateway_dir = Path(settings.ninjaone_gateway_dir)
         self.python = Path(settings.ninjaone_gateway_python)
         self.env_file = Path(settings.ninjaone_gateway_env_file)
+        self.operation_timeout_seconds = max(
+            1, int(getattr(settings, "mcp_operation_timeout_seconds", 120))
+        )
         # Context-local so concurrent FastAPI requests never share MCP sessions.
         self._active_session: ContextVar[ClientSession | None] = ContextVar(
             f"ninjaone_mcp_session_{id(self)}", default=None
@@ -64,7 +72,12 @@ class NinjaOneMCPGateway:
         async with stdio_client(server) as (read_stream, write_stream):
             async with ClientSession(read_stream, write_stream) as session:
                 try:
-                    await session.initialize()
+                    timeout = getattr(self, "operation_timeout_seconds", 120)
+                    await asyncio.wait_for(session.initialize(), timeout=timeout)
+                except asyncio.TimeoutError as exc:
+                    raise MCPGatewayError(
+                        f"NinjaOne MCP initialization timed out after {timeout}s."
+                    ) from exc
                 except Exception as exc:
                     raise MCPGatewayError(
                         f"Could not initialize NinjaOne MCP gateway: {exc}"
@@ -94,8 +107,23 @@ class NinjaOneMCPGateway:
             raise MCPGatewayError(f"Could not list NinjaOne MCP tools: {exc}") from exc
 
     async def _list_tools_from(self, session: ClientSession) -> list[dict[str, Any]]:
-        result = await session.list_tools()
-        return [self._tool_to_dict(tool) for tool in result.tools]
+        started = time.perf_counter()
+        timeout = getattr(self, "operation_timeout_seconds", 120)
+        try:
+            result = await asyncio.wait_for(
+                session.list_tools(), timeout=timeout
+            )
+        except asyncio.TimeoutError as exc:
+            logger.error("MCP list_tools timed out after %.1fs", getattr(self, "operation_timeout_seconds", 120))
+            raise MCPGatewayError(
+                f"NinjaOne MCP tool discovery timed out after {timeout}s."
+            ) from exc
+        except Exception as exc:
+            logger.error("MCP list_tools failed after %.2fs (%s)", time.perf_counter() - started, type(exc).__name__)
+            raise
+        tools = [self._tool_to_dict(tool) for tool in result.tools]
+        logger.info("MCP discovered %d tools in %.2fs", len(tools), time.perf_counter() - started)
+        return tools
 
     async def call_tool(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         try:
@@ -109,11 +137,23 @@ class NinjaOneMCPGateway:
         except Exception as exc:
             raise MCPGatewayError(f"NinjaOne MCP tool '{name}' failed: {exc}") from exc
 
-    @staticmethod
     async def _call_tool_on(
-        session: ClientSession, name: str, arguments: dict[str, Any]
+        self, session: ClientSession, name: str, arguments: dict[str, Any]
     ) -> dict[str, Any]:
-        result = await session.call_tool(name, arguments)
+        started = time.perf_counter()
+        timeout = getattr(self, "operation_timeout_seconds", 120)
+        try:
+            result = await asyncio.wait_for(
+                session.call_tool(name, arguments),
+                timeout=timeout,
+            )
+        except asyncio.TimeoutError as exc:
+            logger.error("MCP tool %s timed out", name)
+            raise MCPGatewayError(f"NinjaOne MCP tool '{name}' timed out.") from exc
+        except Exception as exc:
+            logger.error("MCP tool %s failed after %.2fs (%s)", name, time.perf_counter() - started, type(exc).__name__)
+            raise
+        logger.info("MCP tool %s completed in %.2fs", name, time.perf_counter() - started)
         content = []
         for item in result.content or []:
             if hasattr(item, "text"):
