@@ -135,9 +135,9 @@ When the active MCP tool schema exposes the gateway HMAC approval_token, the app
 Before starting the gateway, install its dependencies and download the full OpenAPI source once from the gateway repository root:
 
 ~~~powershell
-Set-Location C:\\project\\NinjaRMM-API-Gateway-MCP
-.\\.venv\\Scripts\\python.exe -m pip install -e ".[dev]"
-.\\.venv\\Scripts\\python.exe .\\scripts\\sync_openapi_spec.py
+Set-Location C:\project\NinjaRMM-API-Gateway-MCP
+.\.venv\Scripts\python.exe -m pip install -e ".[dev]"
+.\.venv\Scripts\python.exe .\scripts\sync_openapi_spec.py
 ~~~
 
 The gateway repository intentionally does not commit this generated JSON. The agent starts it with:
