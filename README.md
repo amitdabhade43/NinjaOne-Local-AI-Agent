@@ -60,6 +60,7 @@ Current skill areas:
 - Automation and scripts
 - Device operations
 - Reports and compliance
+- Multi-step operations workflows: alert investigation, root-cause analysis, fleet health audits, patch history and approval-gated remediation
 - Backup, IT asset management, knowledge and access
 
 The loader always includes API-discovery guidance and loads only the best matching domain skills for each request. It does not load every skill on every turn. Retrieval combines the existing synonym/typo-aware lexical router with a local SQLite FTS5 index over each skill's name, description, and full Markdown body. The FTS index is held in process memory and rebuilt automatically when a skill file changes; if SQLite was built without FTS5, the lexical router remains available.
