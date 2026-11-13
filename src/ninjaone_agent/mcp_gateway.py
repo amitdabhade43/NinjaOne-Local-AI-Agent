@@ -73,11 +73,11 @@ class NinjaOneMCPGateway:
             async with ClientSession(read_stream, write_stream) as session:
                 try:
                     await asyncio.wait_for(
-                        session.initialize(), timeout=self.operation_timeout_seconds
+                        session.initialize(), timeout=getattr(self, "operation_timeout_seconds", 120)
                     )
                 except asyncio.TimeoutError as exc:
                     raise MCPGatewayError(
-                        f"NinjaOne MCP initialization timed out after {self.operation_timeout_seconds}s."
+                        f"NinjaOne MCP initialization timed out after {getattr(self, 'operation_timeout_seconds', 120)}s."
                     ) from exc
                 except Exception as exc:
                     raise MCPGatewayError(
@@ -114,7 +114,7 @@ class NinjaOneMCPGateway:
                 session.list_tools(), timeout=self.operation_timeout_seconds
             )
         except asyncio.TimeoutError as exc:
-            logger.error("MCP list_tools timed out after %.1fs", self.operation_timeout_seconds)
+            logger.error("MCP list_tools timed out after %.1fs", getattr(self, "operation_timeout_seconds", 120))
             raise MCPGatewayError(
                 f"NinjaOne MCP tool discovery timed out after {self.operation_timeout_seconds}s."
             ) from exc
