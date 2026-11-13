@@ -139,6 +139,14 @@ def _validate_tool_arguments(schema: dict[str, Any], arguments: dict[str, Any]) 
     return None
 
 
+def _is_greeting(message: str) -> bool:
+    """Recognize short greetings so chat history cannot force an unnecessary MCP startup."""
+    return (message or "").strip().casefold().rstrip("!.,?") in {
+        "hi", "hello", "hey", "hiya", "good morning", "good afternoon",
+        "good evening", "howdy",
+    }
+
+
 def _likely_live_request(message: str) -> bool:
     """Avoid a second planning completion for ordinary chat, but keep fuzzy RMM asks tool-first."""
     text = (message or "").casefold()
@@ -493,7 +501,7 @@ class NinjaOneAgent:
             item.get("content", "") for item in (history or [])[-4:]
             if item.get("role") in ("user", "assistant")
         )
-        if not _likely_live_request(prior_context + " " + message):
+        if _is_greeting(message) or not _likely_live_request(prior_context + " " + message):
             return await self._run_connected(message, model, history)
 
         # Keep one gateway subprocess alive for all tool calls in a live-data turn.
@@ -923,7 +931,7 @@ class NinjaOneAgent:
             item.get("content", "") for item in (history or [])[-4:]
             if item.get("role") in ("user", "assistant")
         )
-        live_request = _likely_live_request(prior_context + " " + message)
+        live_request = not _is_greeting(message) and _likely_live_request(prior_context + " " + message)
         available: list[dict[str, Any]] = []
         if live_request:
             try:
@@ -957,7 +965,7 @@ class NinjaOneAgent:
             )
         if not available:
             system_text += (
-                " The NinjaOne MCP gateway is currently unavailable or returned no tools. "
+                " No NinjaOne MCP tools are loaded for this turn. "
                 "You may answer general questions, but do not claim to have retrieved live tenant data."
             )
         master_instructions = render_master_instructions()
