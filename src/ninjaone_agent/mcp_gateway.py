@@ -72,12 +72,11 @@ class NinjaOneMCPGateway:
         async with stdio_client(server) as (read_stream, write_stream):
             async with ClientSession(read_stream, write_stream) as session:
                 try:
-                    await asyncio.wait_for(
-                        session.initialize(), timeout=getattr(self, "operation_timeout_seconds", 120)
-                    )
+                    timeout = getattr(self, "operation_timeout_seconds", 120)
+                    await asyncio.wait_for(session.initialize(), timeout=timeout)
                 except asyncio.TimeoutError as exc:
                     raise MCPGatewayError(
-                        f"NinjaOne MCP initialization timed out after {getattr(self, 'operation_timeout_seconds', 120)}s."
+                        f"NinjaOne MCP initialization timed out after {timeout}s."
                     ) from exc
                 except Exception as exc:
                     raise MCPGatewayError(
@@ -109,14 +108,15 @@ class NinjaOneMCPGateway:
 
     async def _list_tools_from(self, session: ClientSession) -> list[dict[str, Any]]:
         started = time.perf_counter()
+        timeout = getattr(self, "operation_timeout_seconds", 120)
         try:
             result = await asyncio.wait_for(
-                session.list_tools(), timeout=self.operation_timeout_seconds
+                session.list_tools(), timeout=timeout
             )
         except asyncio.TimeoutError as exc:
             logger.error("MCP list_tools timed out after %.1fs", getattr(self, "operation_timeout_seconds", 120))
             raise MCPGatewayError(
-                f"NinjaOne MCP tool discovery timed out after {self.operation_timeout_seconds}s."
+                f"NinjaOne MCP tool discovery timed out after {timeout}s."
             ) from exc
         except Exception as exc:
             logger.error("MCP list_tools failed after %.2fs (%s)", time.perf_counter() - started, type(exc).__name__)
@@ -141,10 +141,11 @@ class NinjaOneMCPGateway:
         self, session: ClientSession, name: str, arguments: dict[str, Any]
     ) -> dict[str, Any]:
         started = time.perf_counter()
+        timeout = getattr(self, "operation_timeout_seconds", 120)
         try:
             result = await asyncio.wait_for(
                 session.call_tool(name, arguments),
-                timeout=self.operation_timeout_seconds,
+                timeout=timeout,
             )
         except asyncio.TimeoutError as exc:
             logger.error("MCP tool %s timed out", name)
