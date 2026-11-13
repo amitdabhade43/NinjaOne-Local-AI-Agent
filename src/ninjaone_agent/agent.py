@@ -759,7 +759,7 @@ class NinjaOneAgent:
         discover = by_name.get("discover_endpoints")
         inspect = by_name.get("inspect_endpoint")
         execute = by_name.get("execute_endpoint")
-        if not (discover and inspect and execute):
+        if not (inspect and execute):
             return None
 
         steps: list[dict[str, Any]] = []
@@ -769,6 +769,8 @@ class NinjaOneAgent:
         # If the local catalogue is missing, discover the exact collection route
         # from the gateway. Never substitute a vaguely similar detail endpoint.
         if route is None:
+            if not discover:
+                return None
             args = _tool_arguments(discover, {
                 "intent": f"list all {resource}",
                 "method": "GET",
