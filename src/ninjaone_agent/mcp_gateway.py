@@ -89,11 +89,6 @@ class NinjaOneMCPGateway:
     async def connection(self) -> AsyncIterator[ClientSession]:
         """Reuse one initialized STDIO process for all tool calls in one agent turn."""
         async with self.session() as session:
-            # Store the timeout on this session for the static call helper.
-            try:
-                setattr(session, "_ninjaone_timeout", self.operation_timeout_seconds)
-            except Exception:
-                pass
             token = self._active_session.set(session)
             try:
                 yield session
@@ -142,15 +137,14 @@ class NinjaOneMCPGateway:
         except Exception as exc:
             raise MCPGatewayError(f"NinjaOne MCP tool '{name}' failed: {exc}") from exc
 
-    @staticmethod
     async def _call_tool_on(
-        session: ClientSession, name: str, arguments: dict[str, Any]
+        self, session: ClientSession, name: str, arguments: dict[str, Any]
     ) -> dict[str, Any]:
         started = time.perf_counter()
         try:
             result = await asyncio.wait_for(
                 session.call_tool(name, arguments),
-                timeout=getattr(session, "_ninjaone_timeout", 120),
+                timeout=self.operation_timeout_seconds,
             )
         except asyncio.TimeoutError as exc:
             logger.error("MCP tool %s timed out", name)
