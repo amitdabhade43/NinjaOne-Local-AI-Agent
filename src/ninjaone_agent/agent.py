@@ -1174,7 +1174,7 @@ class NinjaOneAgent:
             return None
         fields = {str(item.get("name")) for item in route.get("response_fields", [])
                   if isinstance(item, dict)}
-        if "accessibleDeviceIds" not in fields:
+        if not any(field.rsplit(".", 1)[-1] == "accessibleDeviceIds" for field in fields):
             logger.warning("Device-access fast path skipped: accessibleDeviceIds is not documented.")
             return None
         steps: list[dict[str, Any]] = []
