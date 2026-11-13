@@ -1,3 +1,4 @@
+import asyncio
 import json
 from difflib import get_close_matches
 from contextlib import AsyncExitStack
@@ -908,7 +909,7 @@ class NinjaOneAgent:
 
     async def _run_connected(self, message: str, model: str | None = None,
                              history: list[dict[str, str]] | None = None) -> dict[str, Any]:
-        selected = self.foundry.resolve_model(model)
+        selected = await asyncio.to_thread(self.foundry.resolve_model, model)
         try:
             available = self._tool_cache.get("mcp_tools")
             if available is None:
@@ -1009,8 +1010,11 @@ class NinjaOneAgent:
         for _step in range(self.settings.max_agent_steps):
             used_fallback = False
             try:
-                response = self.foundry.complete(
-                    model=selected, messages=messages, tools=tool_specs if tool_specs else None
+                response = await asyncio.to_thread(
+                    self.foundry.complete,
+                    model=selected,
+                    messages=messages,
+                    tools=tool_specs if tool_specs else None,
                 )
             except FoundryUnavailable:
                 used_fallback = True
@@ -1019,7 +1023,8 @@ class NinjaOneAgent:
                       "input_schema": t["input_schema"]} for t in available],
                     ensure_ascii=False,
                 )
-                response = self.foundry.complete(
+                response = await asyncio.to_thread(
+                    self.foundry.complete,
                     model=selected,
                     messages=messages + [{
                         "role": "system",
@@ -1064,7 +1069,8 @@ class NinjaOneAgent:
                             ensure_ascii=False,
                         )
                         try:
-                            fallback = self.foundry.complete(
+                            fallback = await asyncio.to_thread(
+                                self.foundry.complete,
                                 model=selected,
                                 messages=messages + [{
                                     "role": "system",
@@ -1102,7 +1108,8 @@ class NinjaOneAgent:
                                 # grounded in the request and any discovery results already seen.
                                 # This completion has no tools, so it cannot execute an operation.
                                 try:
-                                    clarification = self.foundry.complete(
+                                    clarification = await asyncio.to_thread(
+                                        self.foundry.complete,
                                         model=selected,
                                         messages=messages + [{
                                             "role": "system",
@@ -1297,7 +1304,8 @@ class NinjaOneAgent:
                     transcript.append({"tool": tool_name, "status": "error", "error": str(exc)})
                     messages.append({"role": "system", "content": f"Tool {tool_name} failed: {exc}. Explain the failure; do not fabricate results."})
 
-        final = self.foundry.complete(
+        final = await asyncio.to_thread(
+            self.foundry.complete,
             model=selected,
             messages=messages + [{"role": "system", "content": "Summarize only the tool results already present. If incomplete, say so."}],
         )
