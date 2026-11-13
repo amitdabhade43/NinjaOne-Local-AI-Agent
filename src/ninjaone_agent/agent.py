@@ -89,6 +89,32 @@ def _tool_calls_from_content(content: str) -> list[tuple[str, dict[str, Any]]]:
     return calls
 
 
+def _append_tool_result(
+    messages: list[dict[str, Any]],
+    tool_name: str,
+    arguments: dict[str, Any],
+    call_id: str | None,
+    tool_text: str,
+) -> None:
+    """Append results using the tool role, including for text-based fallback calls."""
+    if not call_id:
+        # Synthesize the matching assistant tool-call envelope so untrusted tenant
+        # data is never misrepresented as a new user instruction.
+        call_id = "fallback_" + uuid.uuid4().hex
+        messages.append({
+            "role": "assistant",
+            "tool_calls": [{
+                "id": call_id,
+                "type": "function",
+                "function": {
+                    "name": tool_name,
+                    "arguments": json.dumps(arguments, ensure_ascii=False),
+                },
+            }],
+        })
+    messages.append({"role": "tool", "tool_call_id": call_id, "content": tool_text})
+
+
 def _clean_model_content(content: str | None) -> str:
     """Remove internal reasoning and tool-call markup from user-facing text."""
     text = content or ""
@@ -1345,24 +1371,7 @@ class NinjaOneAgent:
                     transcript.append({"tool": tool_name, "status": "error" if _tool_failed(result) else "completed",
                                        "result": result})
                     tool_text = json.dumps(result, ensure_ascii=False, default=str)
-                    if not call_id:
-                        # Normalize text/JSON fallback calls to the OpenAI tool-result
-                        # protocol. Never inject tenant-controlled output as a user message.
-                        call_id = "fallback_" + uuid.uuid4().hex
-                        messages.append({
-                            "role": "assistant",
-                            "tool_calls": [{
-                                "id": call_id,
-                                "type": "function",
-                                "function": {
-                                    "name": tool_name,
-                                    "arguments": json.dumps(arguments, ensure_ascii=False),
-                                },
-                            }],
-                        })
-                    messages.append({
-                        "role": "tool", "tool_call_id": call_id, "content": tool_text
-                    })
+                    _append_tool_result(messages, tool_name, arguments, call_id, tool_text)
                 except Exception as exc:
                     logger.exception("MCP tool execution failed: %s", tool_name)
                     transcript.append({"tool": tool_name, "status": "error", "error": str(exc)})
