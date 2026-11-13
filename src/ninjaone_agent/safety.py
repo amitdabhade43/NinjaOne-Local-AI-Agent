@@ -1,4 +1,18 @@
+"""Conservative NinjaOne tool-risk classification without substring false positives."""
+from __future__ import annotations
+
+import re
 from typing import Any
+
+
+_READ_PREFIXES = ("list_", "get_", "find_", "search_", "describe_", "discover_", "inspect_")
+_DESTRUCTIVE_ACTIONS = {
+    "delete", "remove", "wipe", "uninstall", "retire", "destroy", "purge", "erase",
+}
+_WRITE_ACTIONS = {
+    "create", "update", "modify", "patch", "put", "post", "set", "run", "execute",
+    "reboot", "restart", "shutdown", "install", "action", "assign", "enable", "disable",
+}
 
 
 def classify_tool(tool: dict[str, Any], arguments: dict[str, Any] | None = None) -> str:
@@ -12,21 +26,24 @@ def classify_tool(tool: dict[str, Any], arguments: dict[str, Any] | None = None)
     if method in ("POST", "PUT", "PATCH"):
         return "write"
 
-    name = str(tool.get("name", "")).lower()
+    name = str(tool.get("name", "")).strip().casefold()
     if name == "memory_list":
         return "read"
     if tool.get("destructive_hint") is True:
         return "destructive"
     if tool.get("read_only_hint") is True:
         return "read"
-    description = str(tool.get("description", "")).lower()
-    text = f"{name} {description}"
-    if any(word in text for word in ("delete", "remove", "wipe", "uninstall", "retire", "destroy")):
+
+    # Match whole action tokens in the tool name only. Descriptive prose can
+    # mention capabilities such as "remove" while describing a read-only tool.
+    tokens = set(re.findall(r"[a-z0-9]+", name))
+    if tokens & _DESTRUCTIVE_ACTIONS:
         return "destructive"
-    if any(word in text for word in ("create", "update", "modify", "patch", "put", "post", "set_", "run_script",
-                                     "execute", "reboot", "restart", "shutdown", "install", "action")):
+    if tokens & _WRITE_ACTIONS:
         return "write"
-    return "read" if name.startswith(("list_", "get_", "find_", "search_", "describe_", "discover_", "inspect_")) else "write"
+    if name.startswith(_READ_PREFIXES):
+        return "read"
+    return "write"
 
 
 def approval_decision(tool: dict[str, Any], allow_delete: bool,
