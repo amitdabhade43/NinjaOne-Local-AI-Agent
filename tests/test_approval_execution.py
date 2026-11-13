@@ -57,3 +57,23 @@ def test_rejected_approval_never_calls_gateway():
     result = asyncio.run(agent.approve("approval-id", False))
     assert result["status"] == "rejected"
     assert agent.gateway.calls == []
+
+
+
+def test_approval_cannot_be_resolved_from_another_session():
+    import pytest
+
+    agent = _agent_with_pending({"inject_token": False})
+    agent.pending["approval-id"]["session_id"] = "browser-session-a"
+    with pytest.raises(KeyError, match="does not belong"):
+        asyncio.run(agent.approve("approval-id", True, "browser-session-b"))
+    assert agent.gateway.calls == []
+    assert "approval-id" in agent.pending
+
+
+def test_approval_can_be_resolved_by_owning_session():
+    agent = _agent_with_pending({"inject_token": False})
+    agent.pending["approval-id"]["session_id"] = "browser-session-a"
+    result = asyncio.run(agent.approve("approval-id", True, "browser-session-a"))
+    assert result["status"] == "executed"
+    assert agent.gateway.calls
