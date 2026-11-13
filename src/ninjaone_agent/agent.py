@@ -447,7 +447,7 @@ def _inventory_records(result: dict[str, Any]) -> list[dict[str, Any]]:
 
 def _inventory_total(result: dict[str, Any]) -> int | None:
     """Use an explicit total/count field when the API paginates its collection."""
-    keys = ("total", "count", "totalCount", "total_count", "resultCount", "recordsTotal")
+    keys = ("total", "count", "totalCount", "total_count", "resultCount", "recordsTotal", "_total_items")
     for payload in _tool_payloads(result):
         for item in _walk_json(payload):
             for key in keys:
@@ -731,6 +731,113 @@ class NinjaOneAgent:
         else:
             answer = "NinjaOne returned a response, but no recognizable records were present."
         return {"answer": answer, "steps": steps, "pending_approvals": []}
+
+    async def _run_schema_inventory(
+        self, intent: dict[str, str], by_name: dict[str, dict[str, Any]], model: str
+    ) -> dict[str, Any] | None:
+        """Run a simple collection GET through the schema-driven MCP gateway."""
+        resource = intent["resource"]
+        collection_paths = {
+            "organizations": "/v2/organizations",
+            "technicians": "/v2/user/technicians",
+            "devices": "/v2/devices",
+            "users": "/v2/users",
+            "locations": "/v2/locations",
+            "groups": "/v2/groups",
+        }
+        expected_path = collection_paths.get(resource)
+        if not expected_path:
+            return None
+
+        discover = by_name.get("discover_endpoints")
+        inspect = by_name.get("inspect_endpoint")
+        execute = by_name.get("execute_endpoint")
+        if not (discover and inspect and execute):
+            return None
+
+        steps: list[dict[str, Any]] = []
+        route = self.api_catalog.get(expected_path, method="GET")
+        endpoint_key = f"GET {expected_path}"
+
+        # If the local catalogue is missing, discover the exact collection route
+        # from the gateway. Never substitute a vaguely similar detail endpoint.
+        if route is None:
+            args = _tool_arguments(discover, {
+                "intent": f"list all {resource}",
+                "method": "GET",
+                "candidate_limit": 30,
+            })
+            if args is None:
+                return None
+            found = await self.gateway.call_tool("discover_endpoints", args)
+            steps.append({"tool": "discover_endpoints",
+                          "status": "error" if _tool_failed(found) else "completed",
+                          "result": found})
+            if _tool_failed(found):
+                return {"model": model,
+                        "answer": f"NinjaOne endpoint discovery failed for {resource}. No inventory data was retrieved.",
+                        "steps": steps, "pending_approvals": []}
+            candidates = _tool_result_object(found).get("candidates", [])
+            exact = next((item for item in candidates
+                          if isinstance(item, dict)
+                          and str(item.get("method", "")).upper() == "GET"
+                          and item.get("path") == expected_path), None)
+            if exact is None:
+                return None
+            endpoint_key = str(exact.get("endpoint") or f"GET {expected_path}")
+
+        inspect_args = _tool_arguments(inspect, {"endpoint": endpoint_key})
+        if inspect_args is None:
+            return None
+        inspected = await self.gateway.call_tool("inspect_endpoint", inspect_args)
+        steps.append({"tool": "inspect_endpoint",
+                      "status": "error" if _tool_failed(inspected) else "completed",
+                      "result": inspected})
+        if _tool_failed(inspected):
+            return {"model": model,
+                    "answer": f"NinjaOne could not inspect the documented {resource} endpoint. No inventory data was retrieved.",
+                    "steps": steps, "pending_approvals": []}
+
+        detail = _tool_result_object(inspected)
+        method = str(detail.get("method") or "").upper()
+        path = detail.get("path")
+        if method != "GET" or path != expected_path or "{" in str(path):
+            logger.warning("Refusing inventory route mismatch for %s: %s %s", resource, method, path)
+            return None
+
+        execute_args = _tool_arguments(execute, {
+            "endpoint": endpoint_key, "path_params": {}, "query": {}, "body": None,
+        })
+        if execute_args is None:
+            return None
+        result = await self.gateway.call_tool("execute_endpoint", execute_args)
+        steps.append({"tool": "execute_endpoint",
+                      "status": "error" if _tool_failed(result) else "completed",
+                      "result": result})
+        if _tool_failed(result):
+            return {"model": model,
+                    "answer": f"NinjaOne returned an error while retrieving {resource}.",
+                    "steps": steps, "pending_approvals": []}
+
+        envelope = _tool_result_object(result)
+        complete = envelope.get("complete") is not False and envelope.get("truncated") is not True
+        records = _inventory_records(result)
+        total = _inventory_total(result)
+
+        if intent["operation"] == "count":
+            if not complete and total is None:
+                answer = f"NinjaOne returned at least {len(records)} {resource} record(s); the response was incomplete, so this is not a verified total."
+            else:
+                answer = f"NinjaOne returned {total if total is not None else len(records)} {resource} record(s)."
+        elif records:
+            answer = self._format_records_fallback(records[:30], resource.title())
+            if len(records) > 30:
+                answer += f"\n\nShowing 30 of {len(records)} returned records."
+            if not complete:
+                answer += "\n\nThe API response was incomplete or truncated; this is not the full inventory."
+        else:
+            answer = "NinjaOne returned a response, but no recognizable records were present."
+        return {"model": model, "answer": answer, "steps": steps, "pending_approvals": []}
 
     async def _run_people_name_search(
         self, name: str, by_name: dict[str, dict[str, Any]], model: str
@@ -1068,6 +1175,12 @@ class NinjaOneAgent:
                 return people_result
 
         direct_intent = _direct_inventory_intent(message)
+        if direct_intent and {"inspect_endpoint", "execute_endpoint"}.issubset(tool_names):
+            logger.info("Using schema-driven read-only inventory path for %s (%s).",
+                        direct_intent["resource"], direct_intent["operation"])
+            direct_result = await self._run_schema_inventory(direct_intent, by_name, selected)
+            if direct_result is not None:
+                return direct_result
         if direct_intent and {"find_endpoint", "describe_endpoint", "call"}.issubset(tool_names):
             logger.info("Using direct read-only inventory path for %s (%s).",
                         direct_intent["resource"], direct_intent["operation"])
