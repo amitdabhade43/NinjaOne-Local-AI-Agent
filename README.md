@@ -39,7 +39,7 @@ NinjaOne Public API v2
 - Explicit people-name searches use a deterministic read-only path that attempts the documented collection endpoints for console users, end users, technicians, and contacts, filters returned records case-insensitively, and reports categories that could not be searched or where a reported total indicates pagination is still required.
 - Structured people and simple inventory results are formatted by the selected local Foundry model into readable Markdown (headings, counts, numbered records, readable field labels). The formatter receives verified API records only, has no tools, and is instructed not to invent or change values; a deterministic Markdown formatter is used if the model fails or the result is too large. Raw JSON is not the normal user-facing presentation.
 - If a live NinjaOne request stalls during tool planning, the agent makes a clarification-only model call and asks a focused question based on the conversation and discovery results instead of returning a generic tool-call failure. Clarification is never treated as write approval.
-- Simple inventory list/count questions use a deterministic read-only fast path when the connected gateway exposes the legacy `find_endpoint`, `describe_endpoint`, and `call` tools. It supports common synonyms and high-confidence resource-name typo correction, ranks discovered GET endpoints against the requested resource, and calls the selected endpoint without model planning/finalization. Filtered, investigative, write, ambiguous, and unsupported requests stay on the normal agent workflow.
+- Simple inventory list/count questions use a deterministic read-only fast path for both the current schema-driven gateway (`inspect_endpoint` + `execute_endpoint`, using the exact OpenAPI collection route) and the legacy `find_endpoint`, `describe_endpoint`, and `call` tools. It supports common synonyms and high-confidence resource-name typo correction, ranks discovered GET endpoints against the requested resource, and calls the selected endpoint without model planning/finalization. Filtered, investigative, write, ambiguous, and unsupported requests stay on the normal agent workflow.
 - MCP tool schemas are cached briefly (30 seconds) and verified GET endpoint metadata is cached for 15 minutes. Only metadata is cached; live NinjaOne response data is fetched on every request. Both caches are bounded and expire automatically.
 - A local OpenAPI catalogue indexes NinjaOne API v2 operations, descriptions, parameters, request fields, and response fields. Relevant entries are added to model context on demand; exact collection routes can bypass repeated endpoint discovery. It contains documentation only, never tenant records.
 - The browser chat shows each completed MCP step, its status, and returned result in a collapsible activity timeline. Activity is displayed when the response completes; it is not token-by-token/live streaming.
@@ -122,7 +122,7 @@ Run this once after pulling the repository, and repeat it when NinjaOne publishe
 .\.venv\Scripts\python.exe .\scripts\sync_ninjaone_api_catalog.py
 ~~~
 
-The script downloads the official EU NinjaOne Public API v2 OpenAPI JSON and creates `data\ninjaone_api_catalog.json`. The generated file is local and ignored by Git. It includes endpoint summaries, parameter definitions, request-body fields, and response fields. The agent loads it at startup; restart the agent after refreshing it. If the catalogue is absent or invalid, the agent safely falls back to the existing MCP endpoint discovery.
+The script downloads the official NinjaOne Public API v2 OpenAPI JSON from `app.ninjarmm.com` and creates `data\ninjaone_api_catalog.json`. The generated file is local and ignored by Git. It includes endpoint summaries, parameter definitions, request-body fields, and response fields. The agent loads it at startup; restart the agent after refreshing it. If the catalogue is absent or invalid, the agent safely falls back to the existing MCP endpoint discovery.
 
 ### Configure the gateway
 
@@ -132,7 +132,7 @@ C:\project\NinjaRMM-API-Gateway-MCP\.env
 
 When the active MCP tool schema exposes the gateway HMAC approval_token, the approval secret must be the same secret configured for the gateway's HMAC verifier. The agent reads it from the gateway environment file only inside the trusted backend when an approval is accepted. Legacy tool schemas without an approval_token parameter use the agent-side human approval gate and do not receive an extra argument. Never put the secret in a prompt, model context, browser JavaScript, chat history, or Git.
 
-The gateway must have its own dependencies installed in its own virtual environment. The agent starts it with:
+Before starting the gateway, download its full OpenAPI source once from the gateway repository root with `..\\NinjaRMM-API-Gateway-MCP\\.venv\\Scripts\\python.exe .\\scripts\\sync_openapi_spec.py` (run the script from the gateway directory). The gateway repository intentionally does not commit this generated JSON. The gateway must have its own dependencies installed in its own virtual environment. The agent starts it with:
 
 ~~~powershell
 C:\project\NinjaRMM-API-Gateway-MCP\.venv\Scripts\python.exe -m ninja_mcp
