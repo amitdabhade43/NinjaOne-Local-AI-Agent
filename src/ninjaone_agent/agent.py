@@ -486,8 +486,17 @@ class NinjaOneAgent:
 
     async def run(self, message: str, model: str | None = None,
                   history: list[dict[str, str]] | None = None) -> dict[str, Any]:
-        # Keep the gateway subprocess alive for discovery, inspection, and execution
-        # during this turn instead of spawning a new Python process per tool call.
+        # Ordinary conversation must not wait for the NinjaOne MCP subprocess.
+        # This keeps greetings and general questions responsive even if the gateway
+        # is starting, disconnected, or waiting on NinjaOne.
+        prior_context = " ".join(
+            item.get("content", "") for item in (history or [])[-4:]
+            if item.get("role") in ("user", "assistant")
+        )
+        if not _likely_live_request(prior_context + " " + message):
+            return await self._run_connected(message, model, history)
+
+        # Keep one gateway subprocess alive for all tool calls in a live-data turn.
         stack = AsyncExitStack()
         try:
             await stack.enter_async_context(self.gateway.connection())
@@ -910,15 +919,22 @@ class NinjaOneAgent:
     async def _run_connected(self, message: str, model: str | None = None,
                              history: list[dict[str, str]] | None = None) -> dict[str, Any]:
         selected = await asyncio.to_thread(self.foundry.resolve_model, model)
-        try:
-            available = self._tool_cache.get("mcp_tools")
-            if available is None:
-                available = await self.gateway.list_tools()
-                self._tool_cache.set("mcp_tools", available)
-        except Exception as exc:
-            # General conversation remains available when the NinjaOne gateway is offline.
-            logger.warning("NinjaOne MCP tools unavailable for this request: %s", exc)
-            available = []
+        prior_context = " ".join(
+            item.get("content", "") for item in (history or [])[-4:]
+            if item.get("role") in ("user", "assistant")
+        )
+        live_request = _likely_live_request(prior_context + " " + message)
+        available: list[dict[str, Any]] = []
+        if live_request:
+            try:
+                available = self._tool_cache.get("mcp_tools")
+                if available is None:
+                    available = await self.gateway.list_tools()
+                    self._tool_cache.set("mcp_tools", available)
+            except Exception as exc:
+                # General conversation remains available when the NinjaOne gateway is offline.
+                logger.warning("NinjaOne MCP tools unavailable for this request: %s", exc)
+                available = []
         by_name = {item["name"]: item for item in available}
 
         system_text = (
@@ -947,11 +963,6 @@ class NinjaOneAgent:
         master_instructions = render_master_instructions()
         if master_instructions:
             system_text += "\n\n" + master_instructions
-        prior_context = " ".join(
-            item.get("content", "") for item in (history or [])[-4:]
-            if item.get("role") in ("user", "assistant")
-        )
-        live_request = _likely_live_request(prior_context + " " + message)
         catalog_matches = self.api_catalog.search(prior_context + " " + message, limit=8)
         if catalog_matches:
             # Supply only relevant API documentation, not the complete OpenAPI file.
