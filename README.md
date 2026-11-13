@@ -170,7 +170,10 @@ Invoke-RestMethod http://127.0.0.1:8080/api/tools
 Basic live-data test:
 
 ~~~powershell
-$body = @{ message = "List all NinjaOne organizations and show their names and IDs." } | ConvertTo-Json -Depth 10
+$body = @{
+    message = "How many organizations are in NinjaOne?"
+    session_id = [guid]::NewGuid().ToString()
+} | ConvertTo-Json -Depth 10
 $response = Invoke-RestMethod -Uri "http://127.0.0.1:8080/api/chat" -Method Post -ContentType "application/json" -Body $body
 $response | ConvertTo-Json -Depth 20
 ~~~
@@ -197,7 +200,7 @@ DELETE is not supported. If the approval secret is missing or the operation cann
 | GET | /health | Agent process health |
 | GET | /api/models | Dynamic Foundry model discovery |
 | GET | /api/tools | Dynamic MCP tool discovery |
-| POST | /api/chat | Agent request with optional model and history |
+| POST | /api/chat | Agent request with required conversation session ID and optional model/history |
 | POST | /api/approvals/{approval_id} | Approve or reject a pending write |
 
 ## Tests
