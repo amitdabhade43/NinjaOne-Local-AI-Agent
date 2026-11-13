@@ -721,13 +721,24 @@ class NinjaOneAgent:
                     "steps": steps, "pending_approvals": []}
 
         records = _inventory_records(result)
+        envelope = _tool_result_object(result)
+        complete = envelope.get("complete") is not False and envelope.get("truncated") is not True
+        total = _inventory_total(result)
         if intent["operation"] == "count":
-            total = _inventory_total(result)
-            count = total if total is not None else len(records)
-            answer = f"NinjaOne returned {count} {resource} record(s)."
+            if not complete and total is None and records:
+                answer = f"NinjaOne returned at least {len(records)} {resource} record(s); the response was incomplete, so this is not a verified total."
+            elif not complete and total is None:
+                answer = f"The NinjaOne {resource} response was truncated and did not include a verifiable total. I cannot confirm the count."
+            else:
+                count = total if total is not None else len(records)
+                answer = f"NinjaOne returned {count} {resource} record(s)."
         elif records:
             # Avoid a second Foundry completion for routine inventory presentation.
             answer = self._format_records_fallback(records[:30], resource.title())
+            if len(records) > 30:
+                answer += f"\n\nShowing 30 of {len(records)} returned records."
+            if not complete:
+                answer += "\n\nThe API response was incomplete or truncated; this is not the full inventory."
         else:
             answer = "NinjaOne returned a response, but no recognizable records were present."
         return {"answer": answer, "steps": steps, "pending_approvals": []}
