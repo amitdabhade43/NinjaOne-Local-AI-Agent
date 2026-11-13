@@ -239,6 +239,9 @@ def _direct_inventory_intent(message: str) -> dict[str, str] | None:
     text = re.sub(r"\s+", " ", (message or "").casefold()).strip()
     if not text:
         return None
+    # Remove an explicit platform suffix before filtering. Without this, the word
+    # 'in' in ordinary questions such as 'organizations in NinjaOne' disables the fast path.
+    text = re.sub(r"\b(?:in|on)\s+(?:the\s+)?ninjaone\b", "", text).strip()
 
     # Filtered, investigative, or state-dependent requests must use the full agent.
     filter_terms = (
@@ -555,7 +558,14 @@ class NinjaOneAgent:
         # Keep one gateway subprocess alive for all tool calls in a live-data turn.
         stack = AsyncExitStack()
         try:
-            await stack.enter_async_context(self.gateway.connection())
+            await asyncio.wait_for(
+                stack.enter_async_context(self.gateway.connection()),
+                timeout=getattr(self.gateway, "operation_timeout_seconds", 120),
+            )
+        except asyncio.TimeoutError as exc:
+            await stack.aclose()
+            logger.warning("NinjaOne MCP gateway startup timed out for this turn.")
+            return await self._run_connected(message, model, history, session_id)
         except Exception as exc:
             await stack.aclose()
             # Preserve general local-model chat when the gateway cannot start.
