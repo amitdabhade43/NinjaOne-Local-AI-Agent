@@ -132,7 +132,15 @@ C:\project\NinjaRMM-API-Gateway-MCP\.env
 
 When the active MCP tool schema exposes the gateway HMAC approval_token, the approval secret must be the same secret configured for the gateway's HMAC verifier. The agent reads it from the gateway environment file only inside the trusted backend when an approval is accepted. Legacy tool schemas without an approval_token parameter use the agent-side human approval gate and do not receive an extra argument. Never put the secret in a prompt, model context, browser JavaScript, chat history, or Git.
 
-Before starting the gateway, download its full OpenAPI source once from the gateway repository root with `..\\NinjaRMM-API-Gateway-MCP\\.venv\\Scripts\\python.exe .\\scripts\\sync_openapi_spec.py` (run the script from the gateway directory). The gateway repository intentionally does not commit this generated JSON. The gateway must have its own dependencies installed in its own virtual environment. The agent starts it with:
+Before starting the gateway, install its dependencies and download the full OpenAPI source once from the gateway repository root:
+
+~~~powershell
+Set-Location C:\\project\\NinjaRMM-API-Gateway-MCP
+.\\.venv\\Scripts\\python.exe -m pip install -e ".[dev]"
+.\\.venv\\Scripts\\python.exe .\\scripts\\sync_openapi_spec.py
+~~~
+
+The gateway repository intentionally does not commit this generated JSON. The agent starts it with:
 
 ~~~powershell
 C:\project\NinjaRMM-API-Gateway-MCP\.venv\Scripts\python.exe -m ninja_mcp
