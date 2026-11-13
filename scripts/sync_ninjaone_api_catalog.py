@@ -16,7 +16,7 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from ninjaone_agent.api_catalog import build_catalog  # noqa: E402
 
-DEFAULT_URL = "https://eu.ninjarmm.com/apidocs/NinjaRMM-API-v2.json"
+DEFAULT_URL = "https://app.ninjarmm.com/apidocs/NinjaRMM-API-v2.json"
 
 
 def main() -> int:
