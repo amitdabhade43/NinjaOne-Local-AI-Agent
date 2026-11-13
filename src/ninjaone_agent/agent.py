@@ -558,14 +558,10 @@ class NinjaOneAgent:
         # Keep one gateway subprocess alive for all tool calls in a live-data turn.
         stack = AsyncExitStack()
         try:
-            await asyncio.wait_for(
-                stack.enter_async_context(self.gateway.connection()),
-                timeout=getattr(self.gateway, "operation_timeout_seconds", 120),
-            )
-        except asyncio.TimeoutError as exc:
-            await stack.aclose()
-            logger.warning("NinjaOne MCP gateway startup timed out for this turn.")
-            return await self._run_connected(message, model, history, session_id)
+            # Do not wrap this context-manager entry in asyncio.wait_for: that
+            # creates a child task, and ContextVar session state would not flow
+            # back into this request task. session.initialize() has its own timeout.
+            await stack.enter_async_context(self.gateway.connection())
         except Exception as exc:
             await stack.aclose()
             # Preserve general local-model chat when the gateway cannot start.
