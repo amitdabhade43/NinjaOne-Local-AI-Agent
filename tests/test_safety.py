@@ -32,3 +32,23 @@ def test_dynamic_gateway_call_uses_http_method():
     assert classify_tool(generic, {"method": "GET"}) == "read"
     assert approval_decision(generic, False, {"method": "POST"})[1] == "approval_required"
     assert approval_decision(generic, False, {"method": "DELETE"})[1] == "blocked"
+
+
+
+def test_put_substring_in_input_or_output_does_not_mark_read_tool_as_write():
+    assert classify_tool(tool("get_device", description="Returns input and output details")) == "read"
+
+
+def test_remove_in_read_tool_description_does_not_mark_it_destructive():
+    item = tool("list_devices", description="Lists devices and explains how to remove one")
+    assert classify_tool(item) == "read"
+
+
+def test_exact_destructive_action_in_tool_name_is_blocked():
+    item = tool("remove_device")
+    assert classify_tool(item) == "destructive"
+    assert approval_decision(item, False)[1] == "blocked"
+
+
+def test_http_method_takes_precedence_over_tool_name():
+    assert classify_tool(tool("remove_device"), {"http_method": "GET"}) == "read"
